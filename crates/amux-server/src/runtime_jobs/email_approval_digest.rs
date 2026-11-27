@@ -44,24 +44,8 @@ fn enabled(home: &Path) -> bool {
     })
 }
 
-fn digest_hour(home: &Path) -> u32 {
-    crate::api::settings::effective_env(home, "AMUX_EMAIL_APPROVAL_DIGEST_HOUR")
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .filter(|h| *h < 24)
-        .unwrap_or(9)
-}
-
-/// Is today's digest due? Pure: at or after the digest hour, not already sent
-/// today, and something is pending.
-pub(crate) fn digest_due(
-    today: &str,
-    hour_now: u32,
-    last_sent: Option<&str>,
-    digest_hour: u32,
-    pending: usize,
-) -> bool {
-    pending > 0 && hour_now >= digest_hour && last_sent != Some(today)
-}
+/// The shared daily clock (digest_clock.rs).
+const HOUR_KEY: &str = "AMUX_EMAIL_APPROVAL_DIGEST_HOUR";
 
 fn state_path(home: &Path) -> std::path::PathBuf {
     // Not an `apr_<hex>.json` name, so list_pending never reads it as a draft.
@@ -229,13 +213,8 @@ pub(crate) async fn tick_with(
         .filter(|d| !crate::api::email_approval::is_scheduled(d))
         .collect();
     let last = last_sent(home);
-    if !digest_due(
-        &today,
-        now_local.hour(),
-        last.as_deref(),
-        digest_hour(home),
-        pending.len(),
-    ) {
+    let hour = super::digest_clock::hour(home, HOUR_KEY);
+    if !super::digest_clock::due(&today, now_local.hour(), last.as_deref(), hour, pending.len()) {
         return None;
     }
     let (subject, body) = render(&pending);
@@ -243,7 +222,7 @@ pub(crate) async fn tick_with(
         deliver(channels, state, home, &subject, &body, pending.len()).await;
     if delivered {
         stamp(home, &today, pending.len(), &channels_out);
-        tracing::info!(measured = true, n_considered = pending.len(), channels = %channels_out,
+        tracing::info!(measured = true, n_considered = pending.len(), channels = %channels_out, digest_hour = hour,
             verdict = "email_approval_digest_sent", "email approval digest delivered (AMUX-5240)");
     } else if crate::log_dedupe::first_this_bucket(
         "email-approval-digest-undelivered",
@@ -294,24 +273,6 @@ mod tests {
                 .push((to.into(), subject.into(), body.into()));
             (true, "mock".into())
         }
-    }
-
-    #[test]
-    fn due_once_a_day_after_the_hour_and_only_with_something_pending() {
-        assert!(digest_due("2026-09-26", 9, None, 9, 4));
-        assert!(!digest_due("2026-09-26", 8, None, 9, 4), "before the hour");
-        assert!(
-            !digest_due("2026-09-26", 15, Some("2026-09-26"), 9, 4),
-            "already sent today"
-        );
-        assert!(
-            digest_due("2026-09-27", 9, Some("2026-09-26"), 9, 4),
-            "next day"
-        );
-        assert!(
-            !digest_due("2026-09-26", 9, None, 9, 0),
-            "nothing pending, nothing sent"
-        );
     }
 
     #[test]

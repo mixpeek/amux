@@ -502,13 +502,10 @@ pub fn apply_on(home: &Path, worker: &str) -> bool {
     nia::scoped_with_source(home, worker, APPLY_KEY).is_none_or(|(v, _)| truthy(&v))
 }
 
+/// The shared daily clock (runtime_jobs/digest_clock.rs), capped so the
+/// grace window fits into the digest's own day.
 fn digest_hour(home: &Path) -> u32 {
-    crate::api::settings::effective_env(home, "AMUX_DECISION_DIGEST_HOUR")
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .filter(|h| *h < 24)
-        .unwrap_or(9)
-        // A later digest could not fit its grace window into its own day.
-        .min(23 - APPLY_GRACE_HOURS)
+    crate::runtime_jobs::digest_clock::hour(home, "AMUX_DECISION_DIGEST_HOUR").min(23 - APPLY_GRACE_HOURS)
 }
 
 fn wait_days(home: &Path) -> i64 {
@@ -984,7 +981,7 @@ pub async fn tick_with(
     }
 
     // Publish. Reload so this tick's stops show in the digest it sends.
-    let due = !views.is_empty() && hour >= dh && stamp.as_deref() != Some(today.as_str());
+    let due = crate::runtime_jobs::digest_clock::due(&today, hour, stamp.as_deref(), dh, views.len());
     let mut digest_today = stamp.as_deref() == Some(today.as_str());
     if due {
         let rows = state.store.read_async(|c| Ok(load_rows(c)?)).await.unwrap_or_default();
@@ -1014,7 +1011,7 @@ pub async fn tick_with(
                     digest_today = true;
                     sent_at = Some(now);
                     rep.digest_sent = true;
-                    tracing::info!(measured = true, n_considered, cards = n, channels = %out, verdict = "decision_digest_sent", "decision digest delivered");
+                    tracing::info!(measured = true, n_considered, cards = n, channels = %out, digest_hour = dh, verdict = "decision_digest_sent", "decision digest delivered");
                     ask_for_recommendations(acts, state, home, &entries).await;
                 }
                 // Sent but unrecorded: the next tick sends it again, and no
