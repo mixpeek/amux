@@ -6345,3 +6345,15 @@ SYMPTOM: `checks` red on main from ddf266d3b (2026-11-27 22:43Z) on: tests/e2e-t
 COST: main's `checks` red for 5 consecutive commits over about 4 hours, a CI-red card, and a deploy-wake listing the red on every landing lane.
 MECHANISM: unguarded() matched every `await` in the finally body, including the awaits inside cleanup()'s callback, which cleanup() catches. So any cleanup() whose callback awaits anything read as unguarded.
 FIX: unguarded() drops the argument list of each `cleanup(...)` call (by paren depth) before counting. The count is back to the same 47 blocks as the last green run. A new unit case pins that a cleanup-wrapped block is guarded and a bare await before or after it is not; removing the strip turns both tests red.
+
+## The CI-red detector filed one outage on three cards, and the re-filed card named the wrong reason
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-11-28
+SESSION: amux-frustrations
+CARD: AF-1449
+SYMPTOM: iOS Nightly TestFlight has been red since 11-14 for one reason (an expired App Store Connect agreement), tracked on the open needsyou card AF-1297. The detector also filed AF-1414 (11-26) and AF-1441 (11-28), and each deploy-wake listed all three as separate reds. AF-1414's why_now said the discarded AF-1229 had stopped suppressing, while AF-1297 was open the whole time.
+COST: two duplicate cards to fold by hand, deploy-wakes listing one red three times, and about 30 minutes tracing why an open card did not suppress.
+MECHANISM: fault_identity kept the streak anchor (the oldest failure's run id) in a CI fault's identity. GitHub now answers 404 for runs 43376012576 and 43564407582, so the anchor moved to 43683665182 and open_card_for_fault no longer matched the open cards. AF-1414 was a different path: AF-1297 sat untouched for 7 days, the mute expired as designed, and why_now came from released_predecessor, which only looks at closed cards.
+FIX: a CI fault's identity is `ci|<repo>|<workflow>`, so an open card for the workflow holds every later outage, and once it is judged the next outage files. A mute-expiry refile now says which open card expired (verdict=autofix_mute_expired) instead of naming a closed predecessor. Tests: a_deleted_oldest_red_run_does_not_split_the_ci_identity, and the mute-expiry cell of a_stale_suppressing_card_says_so_and_a_fresh_one_does_not.

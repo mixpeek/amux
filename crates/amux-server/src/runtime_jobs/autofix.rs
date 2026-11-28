@@ -7260,6 +7260,8 @@ pub fn connector_findings_from_rollup(rollup: &serde_json::Value, now: f64) -> V
 /// The anchor is stable for as long as the outage lasts and changes exactly
 /// when a green run splits one outage from the next — so a three-day outage is
 /// one card, and a genuinely new outage after a fix is a genuinely new card.
+/// The anchor also moves when GitHub deletes the oldest red run, so an OPEN
+/// card suppresses on `ci|<repo>|<workflow>` alone (`fault_identity`, AF-1449).
 ///
 /// The anchor's one dependency is that the last SUCCESS is still inside the
 /// fetched window. When it is not, the anchor would silently drift older every
@@ -8096,6 +8098,19 @@ fn fault_identity(signature: &str) -> Option<&str> {
             .and_then(|rest| rest.find('|'))
             .map(|i| &signature[..("invariant|".len() + i)]);
     }
+    // AF-1449: a CI fault's identity is `ci|<repo>|<workflow>`. The streak
+    // anchor (the oldest failure's run id) names the outage for `already_filed`,
+    // but it is not stable: GitHub run deletion removes the oldest red run, the
+    // anchor moves to the next one, and the identity moved with it. Measured
+    // 2026-11-28: runs 43376012576 and 43564407582 answer 404, so AF-1441 filed
+    // "since 11-15" beside the open AF-1297 and AF-1414 "since 11-14", one
+    // outage on three cards. While a card for the workflow is open, a later
+    // outage belongs on it; once it is judged, the next outage files.
+    if let Some(rest) = signature.strip_prefix("ci|") {
+        let mut parts = rest.splitn(3, '|');
+        let (repo, workflow) = (parts.next()?, parts.next()?);
+        return Some(&signature[.."ci|".len() + repo.len() + 1 + workflow.len()]);
+    }
     // AMUX-4648: the p95 rollup (`latency|p95|ROLLUP|<families>`) is keyed on its
     // family set exactly like the outlier rollup, and was left out of this list
     // when AMUX-3673 fixed the outlier one, so every new family subset filed
@@ -8115,8 +8130,7 @@ fn fault_identity(signature: &str) -> Option<&str> {
         || signature.starts_with("latency|outlier|")
         || signature.starts_with("latency|p95|")
         || signature.starts_with("silent|system-job|ROLLUP|")
-        || signature.starts_with("silent|schedule-errors|")
-        || signature.starts_with("ci|"))
+        || signature.starts_with("silent|schedule-errors|"))
     {
         return None;
     }
@@ -8600,6 +8614,8 @@ async fn autofix_tick_with_inputs(
         // the report went. Only open cards suppress, which is what keeps the
         // discard property — a judged-and-discarded card lets the next genuine
         // occurrence through.
+        // The open card whose mute expired, if that is why this files (AF-1449).
+        let mut expired_hold: Option<(String, f64)> = None;
         {
             // ORDER MATTERS, and getting it wrong shadowed a real signal:
             // running this ahead of `already_filed` made every repeat of an
@@ -8692,6 +8708,7 @@ async fn autofix_tick_with_inputs(
                             mute_expire_days()
                         ),
                     ));
+                    expired_hold = Some((card.clone(), stale_d.unwrap_or(0.0)));
                     // Fall through to file. The decision is recorded above so
                     // "why did this re-file" is answerable without a bisect.
                 } else {
@@ -8758,11 +8775,29 @@ async fn autofix_tick_with_inputs(
             ));
             continue;
         }
-        if let Some((card, disp, _)) = released {
+        // A mute that expired files with its open card still open, so a closed
+        // predecessor is NOT why this card appeared (AF-1449: AF-1414 blamed the
+        // discarded AF-1229 while the open AF-1297 had sat untouched for 7 days).
+        if let Some((card, days)) = expired_hold {
             f.evidence.push((
                 "why_now".into(),
                 format!(
-                    "{card} tracked this same fault and is now `{disp}`, so it stopped                      suppressing and the next occurrence filed here. If you {} that card,                      this is the consequence rather than a new fault — the underlying                      occurrence may predate this card by hours. Only OPEN, unarchived cards                      suppress (`open_card_for_fault`).",
+                    "{card} is still open for this same fault, but nobody had touched it \
+                     for {days:.1} day(s), past AMUX_AUTOFIX_MUTE_EXPIRE_DAYS ({:.1}), so \
+                     it stopped suppressing and this occurrence filed here \
+                     (verdict=autofix_mute_expired). Judge {card}, or fold this card into it.",
+                    mute_expire_days()
+                ),
+            ));
+        } else if let Some((card, disp, _)) = released {
+            f.evidence.push((
+                "why_now".into(),
+                format!(
+                    "{card} tracked this same fault and is now `{disp}`, so it stopped \
+                     suppressing and the next occurrence filed here. If you {} that card, \
+                     this is the consequence rather than a new fault — the underlying \
+                     occurrence may predate this card by hours. Only OPEN, unarchived cards \
+                     suppress (`open_card_for_fault`).",
                     if disp == "archived" { "archived" } else { "closed" }
                 ),
             ));
@@ -13493,7 +13528,7 @@ mod tests {
     /// stay quiet.
     #[tokio::test]
     async fn a_stale_suppressing_card_says_so_and_a_fresh_one_does_not() {
-        async fn reason_after_aging(days: f64) -> String {
+        async fn reason_after_aging(days: f64) -> (String, Vec<String>) {
             let (st, _d) = state();
             let now = unix_now();
             for i in 0..4 {
@@ -13548,16 +13583,28 @@ mod tests {
                 })
                 .expect("age the card");
             let r2 = autofix_tick(&st, std::path::Path::new("/nonexistent")).await;
-            r2.suppressed
+            let why = r2
+                .suppressed
                 .iter()
                 .find(|(_, _, why)| {
                     why.contains("open for this same fault") || why.contains("NOT suppressed")
                 })
                 .map(|(_, _, why)| why.clone())
-                .unwrap_or_else(|| panic!("the second scan must suppress: {r2:?}"))
+                .unwrap_or_else(|| panic!("the second scan must suppress: {r2:?}"));
+            let descs = st
+                .store
+                .read()
+                .unwrap()
+                .prepare("SELECT COALESCE(desc, '') FROM issues ORDER BY rowid")
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            (why, descs)
         }
 
-        let fresh = reason_after_aging(0.0).await;
+        let (fresh, _) = reason_after_aging(0.0).await;
         assert!(
             !fresh.contains("Its count is what moves"),
             "the claim that was never implemented must be GONE: {fresh}"
@@ -13575,7 +13622,7 @@ mod tests {
 
         // 3 days: past the WARN threshold (2), inside the EXPIRY bound (7), so
         // it still suppresses and must say how stale it is.
-        let stale = reason_after_aging(3.0).await;
+        let (stale, _) = reason_after_aging(3.0).await;
         assert!(
             stale.contains("3.0 day(s)"),
             "a stale card must report HOW stale — that number is the only signal a reader \
@@ -13590,7 +13637,7 @@ mod tests {
         // PAST THE BOUND: the mute EXPIRES and the fault files again. Without
         // this cell the bound could be any number, including infinity, and every
         // assertion above would still pass (AMUX-3774 criterion 2).
-        let expired = reason_after_aging(30.0).await;
+        let (expired, descs) = reason_after_aging(30.0).await;
         assert!(
             expired.contains("NOT suppressed"),
             "past AMUX_AUTOFIX_MUTE_EXPIRE_DAYS a parked card must stop muting its class: \
@@ -13600,6 +13647,16 @@ mod tests {
             expired.contains("re-filing"),
             "and the decision must say what it did, so 'why did this re-file' needs no \
              bisect: {expired}"
+        );
+        // AF-1449: the re-filed card names the OPEN card whose mute expired.
+        // Before, it carried no why_now at all here, or (with a judged card
+        // also present) blamed that one, as AF-1414 blamed AF-1229.
+        assert_eq!(descs.len(), 2, "the expiry files exactly one new card: {descs:?}");
+        assert!(
+            descs[1].contains("is still open for this same fault")
+                && descs[1].contains("verdict=autofix_mute_expired"),
+            "the re-filed card must say an open card's mute expired: {}",
+            descs[1]
         );
     }
 
@@ -18452,6 +18509,32 @@ mod tests {
             "an OPEN card for the streak suppresses every later bucket"
         );
         assert!(fault_identity(&a).is_some_and(|id| id.starts_with("ci|") && !id.ends_with('|')));
+    }
+
+    /// AF-1449. GitHub deleted the oldest red run, so the anchor moved to the
+    /// next one and AF-1441 filed beside the open AF-1414 for one outage. The
+    /// signature may move with the anchor; the identity an open card suppresses
+    /// on must not, and another workflow (even a prefix of the name) is apart.
+    #[test]
+    fn a_deleted_oldest_red_run_does_not_split_the_ci_identity() {
+        let before = vec![
+            ci_run("iOS", 903, "failure", 100.0),
+            ci_run("iOS", 902, "failure", 200.0),
+            ci_run("iOS", 901, "failure", 300.0),
+            ci_run("iOS", 900, "success", 400.0),
+        ];
+        let after: Vec<CiRun> = before.iter().filter(|r| r.run_id != 901).cloned().collect();
+        let now = unix_now();
+        let a = ci_findings(&before, now).0[0].signature.clone();
+        let b = ci_findings(&after, now).0[0].signature.clone();
+        assert_ne!(a, b, "the anchor names the oldest red run that still exists");
+        assert_eq!(fault_identity(&a), Some("ci|mixpeek/amux|iOS"), "{a}");
+        assert_eq!(fault_identity(&a), fault_identity(&b));
+        assert_eq!(
+            fault_identity("ci|mixpeek/amux|iOS-build|5|9"),
+            Some("ci|mixpeek/amux|iOS-build")
+        );
+        assert_eq!(fault_identity("ci|mixpeek/amux"), None);
     }
 
     #[test]
