@@ -213,7 +213,13 @@ async fn late_probe_success_remains_visible_during_the_next_slow_probe() {
         amux_server::api::health::health(axum::extract::State(state)).await;
     release.send(()).unwrap();
     thread.join().unwrap();
-    assert_eq!(status.as_u16(), 503);
+    // GitHub #488: a deadline miss after a recent measured success is a slow
+    // store, not a hung one. 200 so /health readers do not see an outage; the
+    // body still says the probe is unmeasured and why.
+    assert_eq!(status.as_u16(), 200, "a slow store with a recent success is not down");
+    assert_eq!(body.store, "slow");
+    assert_eq!(body.status, "degraded-slow");
+    assert_eq!(body.board.error.as_deref(), Some("probe_deadline_exceeded"));
     assert!(
         !body.board.measured,
         "the current request is still unmeasured"

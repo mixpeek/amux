@@ -681,6 +681,19 @@ pub struct StoreProbeProgress {
 /// overruns of the first.
 const PROBE_BUDGET_MS: u64 = 250;
 
+/// How recent a measured store success must be for a missed deadline to read as
+/// a SLOW store rather than a hung one (GitHub #488). The same split
+/// scripts/watchdog.py already makes from the body ("busy" defers a restart);
+/// the status code used to say 503 either way, 1,038 times in 7 days, and every
+/// other reader of /health (the builder, deploy checks, workers bracketing a
+/// measurement) took a loaded machine for a failed server.
+fn slow_grace_ms() -> u64 {
+    std::env::var("AMUX_HEALTH_SLOW_GRACE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60_000)
+}
+
 /// Duration of the most recent probe that ran to completion, OFFSET BY ONE so
 /// that zero can mean "none has finished yet".
 ///
@@ -809,8 +822,36 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>)
         }
         Err(_) => Err("probe_already_in_flight"),
     };
+    let last_success_age_ms = {
+        let at = state
+            .store
+            .health_probe_last_success
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (at != 0).then(|| probe_clock_ms().saturating_sub(at))
+    };
     let (rev, store, code, board) = match result {
         Ok((rev, board)) => (Some(rev), "ok", StatusCode::OK, board),
+        // A deadline miss while a probe succeeded recently: the store is slow,
+        // not hung. 200, with the probe still unmeasured and the age beside it.
+        Err(reason @ ("probe_deadline_exceeded" | "probe_already_in_flight"))
+            if last_success_age_ms.is_some_and(|age| age < slow_grace_ms()) =>
+        {
+            tracing::info!(target: "health", verdict = "health_board_probe_slow", measured = false,
+                reason, elapsed_ms = started.elapsed().as_millis() as u64,
+                budget_ms = PROBE_BUDGET_MS, last_success_age_ms = last_success_age_ms.unwrap_or(0),
+                "health store probe missed its deadline but succeeded recently; answering 200 as slow");
+            (
+                None,
+                "slow",
+                StatusCode::OK,
+                BoardProbe {
+                    measured: false,
+                    ok: false,
+                    rows_mapped: 0,
+                    error: Some(reason.into()),
+                },
+            )
+        }
         Err(reason) => {
             tracing::warn!(target: "health", verdict = reason, measured = false,
                 phase = phase.load(std::sync::atomic::Ordering::Relaxed),
@@ -882,7 +923,9 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>)
             // does not fix a schema drift or a serializer panic. `status` is
             // the field that carries the alarm; `store` is the one that gates
             // the code.
-            status: if store != "ok" {
+            status: if store == "slow" {
+                "degraded-slow"
+            } else if store != "ok" {
                 "degraded"
             } else if board_bad {
                 "degraded-board"
