@@ -57,7 +57,7 @@ const fixture=createServer((q,s)=>{
  <label>Confirmation code<input id="confirmation" type="text"></label><br>
  <label><input id="reviewed" type="checkbox">I reviewed the Acorn case</label><br>
  <button id="resolve" ${allowed||delayedDenial?'':'disabled'} onclick="if(!document.querySelector('#reviewed').checked)return;fetch('/resolve?phase=${phase}',{method:'POST',body:JSON.stringify({case:'A-147',reason:document.querySelector('#reason').value,confirmation:document.querySelector('#confirmation').value,trusted:event.isTrusted})}).then(r=>r.text()).then(t=>document.querySelector('#result').textContent=t)">Resolve case</button><h2 id="result"></h2></section>`);
-});await new Promise(r=>fixture.listen(0,'0.0.0.0',r));
+});await new Promise(r=>fixture.listen(0,(/^(127\.|localhost$|::1$|$)/.test(process.env.AMUX_ROUTING_FIXTURE_HOST||'')?'127.0.0.1':'0.0.0.0'),r));
 const url=`http://${process.env.AMUX_ROUTING_FIXTURE_HOST||'127.0.0.1'}:${fixture.address().port}`;
 const cookieFor=(token)=>({name:'portal_session',value:token,domain:new URL(url).hostname,path:'/',expires:Math.floor(Date.now()/1000)+86400,httpOnly:true,secure:false,sameSite:'Lax'});
 for(const a of accounts){

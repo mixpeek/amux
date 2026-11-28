@@ -19,7 +19,7 @@ const site=createServer((q,s)=>{
   const logged=(q.headers.cookie||'').includes('api_session='+token);
   if(q.url==='/seed')s.setHeader('Set-Cookie',`api_session=${token}; Path=/; HttpOnly; Max-Age=86400; SameSite=Lax`);
   s.setHeader('Content-Type','text/html');s.end(`<h1>${logged||q.url==='/seed'?'Authenticated API proof':'Logged out'}</h1><input id="proof"><button id="submit" onclick="fetch('/prove',{method:'POST',body:document.querySelector('#proof').value}).then(()=>document.querySelector('h1').textContent='Submission confirmed')">Submit</button>`);
-});await new Promise(r=>site.listen(0,'0.0.0.0',r));
+});await new Promise(r=>site.listen(0,(/^(127\.|localhost$|::1$|$)/.test(process.env.AMUX_ROUTING_FIXTURE_HOST||'')?'127.0.0.1':'0.0.0.0'),r));
 const url=`http://${process.env.AMUX_ROUTING_FIXTURE_HOST||'127.0.0.1'}:${site.address().port}`;
 const source=await chromium.launchPersistentContext(root,{executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,ignoreDefaultArgs:['--use-mock-keychain']});
 await source.pages()[0].goto(url+'/seed');const cookies=await source.cookies();await source.close();

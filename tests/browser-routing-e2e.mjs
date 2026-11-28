@@ -21,7 +21,7 @@ const site=createServer((req,res)=>{
   const logged=(req.headers.cookie||'').includes('route_session='+token);
   if(req.url==='/seed')res.setHeader('Set-Cookie',`route_session=${token}; Path=/; HttpOnly; Max-Age=86400; SameSite=Lax`);
   res.end(`<title>Browser routing proof</title><h1>${req.url==='/seed'||logged?'Authenticated route proof':'Logged out'}</h1><p id="count">${counter}</p><input id="proof" aria-label="Proof" value=""><button id="submit" onclick="fetch('/prove',{method:'POST',body:document.querySelector('#proof').value}).then(()=>document.querySelector('#count').textContent='confirmed')">Submit proof</button>`);
-});await new Promise(r=>site.listen(0,'0.0.0.0',r));
+});await new Promise(r=>site.listen(0,(/^(127\.|localhost$|::1$|$)/.test(process.env.AMUX_ROUTING_FIXTURE_HOST||'')?'127.0.0.1':'0.0.0.0'),r));
 const host=process.env.AMUX_ROUTING_FIXTURE_HOST||'127.0.0.1';const siteUrl=`http://${host}:${site.address().port}`;
 const source=mkdtempSync(join(tmpdir(),'amux-route-source-'));
 const profileDir=join(home,'playwright-auth','profiles',profile);mkdirSync(profileDir,{recursive:true});
