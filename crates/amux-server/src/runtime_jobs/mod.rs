@@ -45,6 +45,8 @@
 
 pub mod autofix;
 pub mod board_drain;
+pub mod pickup_admission;
+pub mod pickup_receipt_admission;
 pub mod board_drive;
 pub mod board_hygiene;
 pub mod browser_login_sync;
