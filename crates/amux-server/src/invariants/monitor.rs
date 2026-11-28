@@ -189,6 +189,8 @@ struct RouteWindow {
     /// (the memo above did not move a 34-chunk boot build: 84.8 s on f7ff7741b).
     normalize_ms: f64,
     normalized: usize,
+    /// How many times the memo was full and pruned to the window's paths.
+    pruned: usize,
 }
 /// Past this many remembered paths the memo starts over, so an unbounded set
 /// of distinct paths cannot grow it forever.
@@ -311,6 +313,7 @@ fn route_window_load(file: &std::path::Path, conn: &rusqlite::Connection, now: f
         shapes: Default::default(),
         normalize_ms: 0.0,
         normalized: 0,
+        pruned: 0,
     })
 }
 
@@ -344,7 +347,7 @@ fn route_window(
     if rebuild {
         let started = std::time::Instant::now();
         let shapes = cache.as_mut().map(|w| std::mem::take(&mut w.shapes)).unwrap_or_default();
-        let mut w = RouteWindow { built_at: now, lo, last_id: 0, groups: Default::default(), saved_at: 0.0, shapes, normalize_ms: 0.0, normalized: 0 };
+        let mut w = RouteWindow { built_at: now, lo, last_id: 0, groups: Default::default(), saved_at: 0.0, shapes, normalize_ms: 0.0, normalized: 0, pruned: 0 };
         let built = (|| -> rusqlite::Result<i64> {
             let (first, last): (Option<i64>, Option<i64>) = conn.query_row(
                 "SELECT MIN(id), MAX(id) FROM _amux_request_log WHERE ts >= ?1",
@@ -409,13 +412,31 @@ fn route_window(
 /// The window's raw-path totals folded into route shapes, normalizing each
 /// distinct path once per process (the memo in `shapes`).
 fn route_rows(w: &mut RouteWindow) -> Vec<checks::RouteOutcomeRow> {
+    route_rows_capped(w, ROUTE_SHAPES_MAX)
+}
+
+/// `route_rows` with the memo's cap as a parameter, so a test can reach it.
+///
+/// THE CAP NEVER GOES BELOW THE WINDOW'S OWN PATHS, and a full memo drops only
+/// paths that left the window. It used to clear outright at 200,000: the Mac's
+/// window held 328,579 distinct paths (2026-11-27), so every pass cleared the
+/// memo and re-scored about 330,000 paths against ~1,250 routes, and the server
+/// sat at 100-480% CPU between deploys (hog RCA 20261127-190030). The memo is
+/// still bounded, by the window, which ages out on its own.
+fn route_rows_capped(w: &mut RouteWindow, cap: usize) -> Vec<checks::RouteOutcomeRow> {
+    let cap = cap.max(w.groups.len());
     let mut by_shape: std::collections::HashMap<(String, String), RouteAcc> = Default::default();
     for ((method, path), a) in &w.groups {
         let shape = match w.shapes.get(path) {
             Some(shape) => shape.clone(),
             None => {
-                if w.shapes.len() >= ROUTE_SHAPES_MAX {
-                    w.shapes.clear();
+                if w.shapes.len() >= cap {
+                    let before = w.shapes.len();
+                    let live: std::collections::HashSet<&str> = w.groups.keys().map(|(_, p)| p.as_str()).collect();
+                    w.shapes.retain(|p, _| live.contains(p.as_str()));
+                    w.pruned += 1;
+                    tracing::info!(before, after = w.shapes.len(), cap, measured = true, n_considered = before,
+                        verdict = "route_shapes_pruned", "section 1a's route-shape memo was full; dropped the paths that left the window");
                 }
                 let t = std::time::Instant::now();
                 let shape = crate::api::request_log::normalize_target_verb(path);
@@ -1071,6 +1092,46 @@ mod f64_roundtrip_wiring_tests {
         // A rebuild keeps what it learned.
         super::route_window(&mut cache, &conn, now + super::ROUTE_REBUILD_SECS + 1.0, 1000.0 + super::ROUTE_REBUILD_SECS, None);
         assert_eq!(cache.as_ref().unwrap().shapes.len(), 2);
+    }
+
+    #[test]
+    fn a_window_with_more_paths_than_the_memo_cap_does_not_renormalize_every_pass() {
+        // Hog RCA 20261127-190030: 328,579 distinct paths against a 200,000
+        // cap cleared the memo on every pass. Here the cap is 1 and the window
+        // holds 3 paths: the first pass scores each once, the second none.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _amux_request_log (id INTEGER PRIMARY KEY, ts REAL NOT NULL, method TEXT, path TEXT, status INTEGER);",
+        )
+        .unwrap();
+        let now = 2_000_000_000.0;
+        for path in ["/api/board/AMUX-1", "/api/board/AMUX-2", "/api/board/AMUX-3"] {
+            conn.execute(
+                "INSERT INTO _amux_request_log (ts, method, path, status) VALUES (?1, 'GET', ?2, 200)",
+                rusqlite::params![now - 10.0, path],
+            )
+            .unwrap();
+        }
+        let mut cache = None;
+        super::route_window(&mut cache, &conn, now, 1000.0, None);
+        let w = cache.as_mut().unwrap();
+        w.shapes.clear();
+        w.normalized = 0;
+        let first = super::route_rows_capped(w, 1);
+        assert_eq!(w.normalized, 3, "the first pass scores each path once");
+        let second = super::route_rows_capped(w, 1);
+        assert_eq!(w.normalized, 3, "a second pass over the same window scores none again");
+        assert_eq!(w.pruned, 0, "a cap below the window's own paths is raised to them, so nothing is pruned");
+        assert_eq!(first.len(), second.len());
+        // A path that left the window is what a full memo drops.
+        w.shapes.insert("/gone".into(), "/gone".into());
+        w.groups.retain(|(_, p), _| p != "/api/board/AMUX-3");
+        w.groups.insert(("GET".into(), "/api/board/AMUX-4".into()), Default::default());
+        super::route_rows_capped(w, 1);
+        assert!(!w.shapes.contains_key("/gone"), "a stale path is pruned: {:?}", w.shapes.keys());
+        assert!(w.shapes.contains_key("/api/board/AMUX-4"));
+        assert_eq!(w.normalized, 4, "only the new path was scored");
+        assert_eq!(w.pruned, 1, "one prune made room");
     }
 
     #[test]
