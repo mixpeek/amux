@@ -6321,3 +6321,15 @@ SYMPTOM: `amux land --cancel 3109689` printed "cancelled detached land pid 31096
 COST: main red on ci/tests/test_nothing_reads_zb.py from the push until a fix landed, and a wrong "pulled before it landed" note to mixpeek-meta-worker.
 MECHANISM: the holder kept the tickets it batched only in a local variable (stack_in). The cancel kills the waiter's process group and removes its ticket. The holder never reads the ticket again before pushing, so nothing outside the holder knew the commits were committed to a push.
 FIX: the holder writes `<queue>/.inbatch-<ticket>` (holder lane, pid, composed time, sha) on every stack build and removes it when it tells the waiter. Every cancel path (`--cancel` detached, by waiter pid, unrecorded, and `--cancel-for`) reads it before the kill and prints and logs `WARN verdict=land_cancel_in_batch` naming the holder's batch and how to stop it. `--cancel-for`'s message to the lane no longer says "Nothing was pushed" in that case. `--status` lists "in <holder>'s batch in flight" tickets. The cancel still does not take commits out of a composed batch; it says they land unless the batch fails. scripts/test-land-cancel-in-batch.sh drives a real three-lane batch.
+
+## amux wake --when: a check broken by the scheduler's pipefail or its working directory reads "not yet" forever
+AREA: scheduler
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-11-28
+SESSION: mixpeek-audit
+CARD: AF-1439
+SYMPTOM: SCHED-3438's check piped `cat land.log land.log.1` into awk. land.log.1 did not exist, so cat exited 1 and, under the scheduler's `bash -o pipefail -c`, the check exited 1 ("not yet") every 5 minutes after awk had found the landed line. The wake never fired and the lane's ack came about 75 minutes late. In a plain shell the check passed.
+COST: about 75 minutes of a lane waiting on a wake that could not fire.
+MECHANISM: wake checks run as `/bin/bash -o pipefail -c` (scheduler.rs shell_schedule_command, kept so a check piped into tail reports the check's failure) with the server's working directory, which is /. Exit 1 means "not yet", so a failing early stage or a relative path reads exactly like a condition not yet true. `amux wake help` named neither.
+FIX: `amux wake help` says how a check runs (bash -o pipefail from /, 60s, exit 0 / 1 / other). `amux wake --when` runs the check once at creation the same way and prints the result: passes now, "not yet", verdict=wake_check_pipefail when it fails only under pipefail (with the failing stage's message), verdict=wake_check_broken, or verdict=wake_check_timeout. The schedule is still created. scripts/test-wake-check-probe.sh covers each case; the schedule form in the dashboard is not changed.

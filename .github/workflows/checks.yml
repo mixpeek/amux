@@ -654,7 +654,7 @@ jobs:
       - name: amux wake creates, lists and cancels the lane's own wakeups
         run: |
           set -uo pipefail
-          bash scripts/test-cli-wake.sh
+          bash scripts/test-cli-wake.sh && bash scripts/test-wake-check-probe.sh
       - name: amux stop records the stop through the server
         run: |
           set -uo pipefail

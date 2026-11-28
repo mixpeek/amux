@@ -11252,6 +11252,11 @@ ${BOLD}amux wake${RESET}: wake YOUR lane later with a prompt (the amux scheduler
                                        the prompt when it exits 0, then stop (--keep: every
                                        time it passes). --until defaults to 24h from now so a
                                        condition that never comes true stops polling.
+                                       The check runs as /bin/bash -o pipefail -c from /, for
+                                       at most 60s: exit 0 delivers, 1 is "not yet", anything
+                                       else is a broken check. Under pipefail any failing stage
+                                       of a pipe fails the check; use absolute paths. It is run
+                                       once at creation and the result printed.
   amux wake --list                     Your enabled schedules: id, kind, next run, cadence
   amux wake --cancel <ID>              Delete one
 
@@ -11412,6 +11417,34 @@ EOF
   local rc=$?; rm -f "$out"; return $rc
 }
 
+# _wake_check_probe <check>: run a --when check once now, the way the
+# scheduler will (schedule_check.rs: `/bin/bash -o pipefail -c`, the server's
+# working directory /, 60s), and say how it ended. Exit 1 is "not yet", so a
+# check broken by pipefail or a relative path read as "not yet" forever:
+# SCHED-3438's `cat land.log land.log.1 | awk ...` exited 1 on a missing
+# land.log.1 after awk had matched, and the wake came ~75 min late
+# (mixpeek-audit, 2026-11-28). The schedule is still created.
+_wake_check_probe() {
+  local c="$1" out rc plain_rc last
+  rc=0; out="$(cd / && perl -e 'alarm shift; exec @ARGV' "${AMUX_WAKE_PROBE_TIMEOUT_S:-60}" /bin/bash -o pipefail -c "$c" 2>&1 </dev/null)" || rc=$?
+  last="$(printf '%s\n' "$out" | awk 'NF{l=$0} END{print substr(l,1,200)}')"
+  case "$rc" in
+    0) echo "amux wake: the check passes now (exit 0, as the scheduler runs it); the prompt goes at the first check" >&2; return 0 ;;
+    142) echo "amux wake: WARN verdict=wake_check_timeout: the check ran past the scheduler's 60s limit; every fire will be skipped as broken" >&2; return 0 ;;
+  esac
+  if [ "$rc" = 1 ]; then
+    plain_rc="$( (cd / && perl -e 'alarm shift; exec @ARGV' "${AMUX_WAKE_PROBE_TIMEOUT_S:-60}" /bin/bash -c "$c" >/dev/null 2>&1 </dev/null) && echo 0 || echo $? )"
+    if [ "$plain_rc" = 0 ]; then
+      echo "amux wake: WARN verdict=wake_check_pipefail: the check exits 1 under pipefail but 0 without it: a stage before the last fails${last:+ ($last)}. The scheduler runs checks as bash -o pipefail and reads exit 1 as \"not yet\", so this may never fire. Make that stage succeed (e.g. cat only files that exist, or add || true)." >&2
+    else
+      echo "amux wake: the check reads \"not yet\" now (exit 1${last:+: $last}), run from / under bash -o pipefail as the scheduler runs it; a relative path or an unset variable here never comes true" >&2
+    fi
+    return 0
+  fi
+  echo "amux wake: WARN verdict=wake_check_broken: the check exited $rc now${last:+ ($last)}; the scheduler counts any exit but 0 and 1 as a broken check" >&2
+  return 0
+}
+
 cmd_wake() {
   local AMUX_API="${AMUX_API:-$(cmd_url)}"
   local me="${AMUX_SESSION:-}"
@@ -11489,6 +11522,7 @@ except Exception: pass' "$out" 2>/dev/null)
   fi
   [[ -n "${prompt//[[:space:]]/}" ]] || die "amux wake: the prompt is empty"
   if [[ -n "$cond" && -z "$until" ]]; then until="24h"; fi
+  [[ -n "$cond" ]] && _wake_check_probe "$cond"
 
   local body out code
   body=$(W_SESSION="$me" W_PROMPT="$prompt" W_TITLE="$title" W_WHEN="$when" W_EVERY="$every" W_COND="$cond" \
