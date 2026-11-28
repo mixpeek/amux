@@ -18,6 +18,8 @@ sqlite3 "$DB" "CREATE TABLE schedules (id TEXT, command TEXT, enabled INTEGER, d
   INSERT INTO schedules VALUES ('S2', 'cd \$HOME/.amux/tmp/lane4/scheddir; ./run.sh', 1, NULL);
   INSERT INTO schedules VALUES ('S3', 'bash ~/.amux/tmp/lane1/oldidle/x.sh', 0, NULL);"
 export LANE_TMP_SCHED_DB="$DB"
+# A cell with STATE_DIR tells lanes about held entries; never a real amux send.
+export LANE_TMP_NOTICE_CMD="true TARGET FILE"
 # The cells below use a few small files to stand for idle build output, so they
 # pin the directory keep at 1.5 MB; the lane7 cell checks the 64 MB default.
 export LANE_TMP_KEEP_DIR_KB=1500
@@ -110,7 +112,7 @@ outd="$(STATE_DIR="$ST8" LANE_TMP_ROOT="$R8" LANE_TMP_IDLE_MIN=1440 bash -c ". '
 printf '%s' "$outd" | grep -qF "lane tmp would remove $R8/w/scratchbuild (1M" && [ -d "$R8/w/scratchbuild" ] && [ ! -s "$ST8/lane-tmp-removed.log" ] && echo "ok   a dry run names each entry it would remove and touches nothing" || { echo "FAIL dry run: $outd"; fail=1; }
 out8="$(STATE_DIR="$ST8" LANE_TMP_ROOT="$R8" LANE_TMP_IDLE_MIN=1440 bash -c ". '$F'; reap_lane_tmp 0")"
 [ -f "$R8/w/evalset2/labelled.json" ] && printf '%s' "$out8" | grep -q '1 marked .amux-keep' && echo "ok   a directory marked .amux-keep is kept and counted" || { echo "FAIL keep marker: $out8"; fail=1; }
-[ ! -e "$R8/w/scratchbuild" ] && printf '%s' "$out8" | grep -qF "lane tmp removed $R8/w/scratchbuild (1M, nothing changed in 1440 min) (verdict=lane_tmp_entry_removed)" && echo "ok   each removal is logged with its path, size and floor" || { echo "FAIL per-entry line: $out8"; fail=1; }
+[ ! -e "$R8/w/scratchbuild" ] && printf '%s' "$out8" | grep -qF "lane tmp held $R8/w/scratchbuild at $R8/.held/w/scratchbuild." && printf '%s' "$out8" | grep -qF "(1M, nothing changed in 1440 min; deleted after 48 h) (verdict=lane_tmp_entry_held)" && echo "ok   each removal is logged with its path, size and floor" || { echo "FAIL per-entry line: $out8"; fail=1; }
 grep -qF "$(printf 'w/scratchbuild\t')" "$ST8/lane-tmp-removed.log" 2>/dev/null && ! grep -q evalset2 "$ST8/lane-tmp-removed.log" && echo "ok   and appended to the removal ledger" || { echo "FAIL ledger: $(cat "$ST8/lane-tmp-removed.log" 2>&1)"; fail=1; }
 # amux, 2026-11-12: a worktree with a tested, uncommitted fix idled past the
 # floor and was removed. A checkout with edited tracked files or commits on no
@@ -143,7 +145,8 @@ o1="$(tick10)"
 [ ! -e "$R10/lab/build" ] && echo "ok   an idle entry under the notice size is removed at once" || { echo "FAIL small entry kept: $o1"; fail=1; }
 m1=$(cat "$SENT"/lab.*.msg 2>/dev/null)
 [ "$(ls "$SENT" | wc -l | tr -d ' ')" = 1 ] && printf '%s' "$m1" | grep -qF -- "- $R10/lab/cache (1M" && printf '%s' "$m1" | grep -qF -- "- $R10/lab/live (1M" && printf '%s' "$m1" | grep -qF '.amux-keep' \
-  && printf '%s' "$o1" | grep -qF 'lane tmp told lab about 2 entr(ies) (verdict=lane_tmp_notice_sent)' && echo "ok   the lane gets one message naming each entry and how to keep it" || { echo "FAIL message: $(ls "$SENT") $m1 $o1"; fail=1; }
+  && printf '%s' "$m1" | grep -qF -- "- $R10/lab/build (1M) is now $R10/.held/lab/build." \
+  && printf '%s' "$o1" | grep -qF 'lane tmp told lab about 2 entr(ies) and 1 held entr(ies) (verdict=lane_tmp_notice_sent)' && echo "ok   the lane gets one message naming each entry, where the held one went, and how to keep them" || { echo "FAIL message: $(ls "$SENT") $m1 $o1"; fail=1; }
 o2="$(tick10)"
 [ -d "$R10/lab/cache" ] && [ "$(ls "$SENT" | wc -l | tr -d ' ')" = 1 ] && printf '%s' "$o2" | grep -qF '2 large entr(ies) inside their 360 min notice' \
   && echo "ok   inside its notice an entry is kept and the lane is not told again" || { echo "FAIL second tick: $o2"; fail=1; }
@@ -156,6 +159,30 @@ mkdir -p "$R10/iso/cache"; head -c 2000000 /dev/zero > "$R10/iso/cache/x.bin"; f
 o5="$(LANE_TMP_ROOT="$R10" LANE_TMP_IDLE_MIN=1440 STATE_DIR="$ST10" LANE_TMP_NOTICE_KB=1500 LANE_TMP_NOTICE_CMD=false bash -c ". '$F'; reap_lane_tmp 0")"
 [ -d "$R10/iso/cache" ] && printf '%s' "$o5" | grep -qF 'could not tell iso about 1 entr(ies); they still wait 360 min (verdict=lane_tmp_notice_undelivered)' \
   && echo "ok   a lane that cannot be told is logged and its entry still waits" || { echo "FAIL undelivered: $o5"; fail=1; }
+# mxp-presales, 2026-11-28: burst.HnLZ (103 MB, a customer proof's only raw
+# evidence) idled 13 h and was deleted with no word to its lane. An entry under
+# the notice size is held in .held for LANE_TMP_HOLD_H, its lane is told where,
+# and it is deleted only when the hold is over.
+R11="$T/root11"; ST11="$T/state11"; SENT11="$T/sent11"; mkdir -p "$R11/pre/burst.X/html" "$SENT11"
+for i in $(seq 1 80); do head -c 30000 /dev/urandom > "$R11/pre/burst.X/html/p$i.html"; done
+find "$R11" -exec touch -t 202609300000 {} +
+tick11() { LANE_TMP_ROOT="$R11" LANE_TMP_IDLE_MIN=1440 STATE_DIR="$ST11" LANE_TMP_NOTICE_CMD="cp FILE $SENT11/TARGET.\$\$.msg" "$@" bash -c ". '$F'; reap_lane_tmp 0"; }
+o11="$(tick11)"
+held=$(ls -d "$R11"/.held/pre/burst.X.* 2>/dev/null | head -1)
+[ ! -e "$R11/pre/burst.X" ] && [ -f "$held/html/p80.html" ] && printf '%s' "$o11" | grep -qF "lane tmp held $R11/pre/burst.X at $held (" && printf '%s' "$o11" | grep -q 'verdict=lane_tmp_entry_held' \
+  && echo "ok   an idle entry under the notice size is held, whole, not deleted" || { echo "FAIL hold: $o11"; fail=1; }
+grep -qF "$(printf 'held=%s' "$held")" "$ST11/lane-tmp-removed.log" 2>/dev/null && grep -qF -- "- $R11/pre/burst.X (" "$SENT11"/pre.*.msg 2>/dev/null && grep -qF "is now $held" "$SENT11"/pre.*.msg \
+  && echo "ok   the ledger and the lane's message both say where it went" || { echo "FAIL hold record: $(cat "$ST11/lane-tmp-removed.log" "$SENT11"/* 2>&1)"; fail=1; }
+o11b="$(tick11)"
+[ -d "$held" ] && ! printf '%s' "$o11b" | grep -q 'lane_tmp_held_purged' && echo "ok   inside its hold a held entry stays and is not judged as a lane entry" || { echo "FAIL early purge: $o11b"; fail=1; }
+old="${held%.*}.1000"; mv "$held" "$old"
+o11c="$(tick11)"
+[ ! -e "$old" ] && printf '%s' "$o11c" | grep -qF "lane tmp deleted held $old after its 48 h hold (verdict=lane_tmp_held_purged)" && grep -q 'purged_after_h=48' "$ST11/lane-tmp-removed.log" \
+  && echo "ok   past its hold a held entry is deleted and the ledger says so" || { echo "FAIL purge: $o11c"; fail=1; }
+mkdir -p "$R11/pre/now/html"; for i in $(seq 1 80); do echo $i > "$R11/pre/now/html/p$i"; done; find "$R11/pre" -exec touch -t 202609300000 {} +
+o11d="$(tick11 env LANE_TMP_HOLD_H=0)"
+[ ! -e "$R11/pre/now" ] && ! ls -d "$R11"/.held/pre/now.* >/dev/null 2>&1 && printf '%s' "$o11d" | grep -qF "lane tmp removed $R11/pre/now" \
+  && echo "ok   LANE_TMP_HOLD_H=0 deletes at once, as before" || { echo "FAIL hold off: $o11d"; fail=1; }
 kill "$holder" 2>/dev/null; wait 2>/dev/null
 rm -f "$F"; rm -rf -- "${T:?}"
 exit $fail

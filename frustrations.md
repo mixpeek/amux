@@ -6357,3 +6357,15 @@ SYMPTOM: iOS Nightly TestFlight has been red since 11-14 for one reason (an expi
 COST: two duplicate cards to fold by hand, deploy-wakes listing one red three times, and about 30 minutes tracing why an open card did not suppress.
 MECHANISM: fault_identity kept the streak anchor (the oldest failure's run id) in a CI fault's identity. GitHub now answers 404 for runs 43376012576 and 43564407582, so the anchor moved to 43683665182 and open_card_for_fault no longer matched the open cards. AF-1414 was a different path: AF-1297 sat untouched for 7 days, the mute expired as designed, and why_now came from released_predecessor, which only looks at closed cards.
 FIX: a CI fault's identity is `ci|<repo>|<workflow>`, so an open card for the workflow holds every later outage, and once it is judged the next outage files. A mute-expiry refile now says which open card expired (verdict=autofix_mute_expired) instead of naming a closed predecessor. Tests: a_deleted_oldest_red_run_does_not_split_the_ci_identity, and the mute-expiry cell of a_stale_suppressing_card_says_so_and_a_fresh_one_does_not.
+
+## The lane tmp reaper deleted a worker's only copy of customer evidence with no word to the worker
+AREA: reliability
+SEVERITY: hurts
+STATUS: fixed
+DATE: 2026-11-28
+SESSION: mxp-presales
+CARD: AF-1451
+SYMPTOM: ~/.amux/tmp/mxp-presales/burst.HnLZ (103 MB: the runner, 200 fetched pages, state.json, events.jsonl and the per-leg reports for Primis's 11-27 burst proof) vanished, and so did its sibling e2e.7BQG a day earlier. The lane did not delete them and could not find what did; boundaries.jsonl had no rm of either path.
+COST: the per-article timings for leg 2's two batches were lost unread, and about an hour went into rebuilding the runner from the transcript for a re-run.
+MECHANISM: scripts/mac-cleanup-tick.sh reap_lane_tmp (SCHED-465, hourly) removes a lane TMPDIR entry once nothing in it changed for LANE_TMP_IDLE_MIN, which ~/.amux/amux.env sets to 720. burst.HnLZ was last written 11-27 17:45Z and removed 11-28 06:58Z. Every removal was logged to ~/.amux/logs/mac-cleanup/lane-tmp-removed.log, but only entries of 500 MB or more were given notice, so a smaller entry went with no message to its lane, which did not know the ledger existed.
+FIX: an idle entry under the notice size is held in ~/.amux/tmp/.held/<lane>/<entry>.<epoch> for LANE_TMP_HOLD_H (48) hours instead of deleted, and the lane gets one message per tick naming where each held entry went and how to keep it (verdict=lane_tmp_entry_held). The ledger line carries held=<path>; past the hold it is deleted with verdict=lane_tmp_held_purged. LANE_TMP_HOLD_H=0 restores immediate deletion. scripts/test-mac-cleanup-lane-tmp.sh covers hold, message, purge and hold off.

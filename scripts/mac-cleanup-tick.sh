@@ -342,6 +342,14 @@ LANE_TMP_NOTICE_KB=${AMUX_CLEANUP_LANE_TMP_NOTICE_KB:-512000}
 LANE_TMP_NOTICE_MIN=${AMUX_CLEANUP_LANE_TMP_NOTICE_MIN:-360}
 # Seam: TARGET is the lane, FILE the message path. The tests point it at a recorder.
 LANE_TMP_NOTICE_CMD=${AMUX_CLEANUP_LANE_TMP_NOTICE_CMD:-amux send TARGET --file FILE}
+# An idle entry under LANE_TMP_NOTICE_KB is HELD, not deleted (mxp-presales,
+# 2026-11-28): ~/.amux/tmp/mxp-presales/burst.HnLZ, 103 MB and the only raw
+# evidence for a customer proof, idled 13 h and was removed with no word to
+# its lane, which could not find what deleted it. It moves to
+# LANE_TMP_ROOT/.held/<lane>/<entry>.<epoch> (a rename on the same volume) and
+# is deleted LANE_TMP_HOLD_H later; its lane is told where it went. 0 deletes
+# at once, as before.
+LANE_TMP_HOLD_H=${AMUX_CLEANUP_LANE_TMP_HOLD_H:-48}
 # At most this many entries per tick. Deleting 11,781 entries (millions of
 # files) in one pass on 2026-10-04 drove fseventsd from 9 to 57 GB resident
 # and filled 52 GB of swap; a capped pass leaves the rest for the next tick.
@@ -3225,6 +3233,24 @@ reap_lane_tmp() { # <dry:0|1>
   # this reaper is for, have far more files or far more bytes.
   local keep_dir_files=${LANE_TMP_KEEP_DIR_FILES:-64} keep_dir_kb=${LANE_TMP_KEEP_DIR_KB:-65536} n_small_dir=0 nf
   [ -d "$root" ] || { echo "mac-cleanup: lane tmp: no $root"; return 0; }
+  local hold_h=${LANE_TMP_HOLD_H:-48} held_root="$root/.held" held_dir="" n_held=0 n_purged=0 h hs dest rel
+  case "$hold_h" in ''|*[!0-9]*) hold_h=0 ;; esac
+  # A held entry past its hold goes now. Its age is the epoch in its name: a
+  # rename keeps the entry's own mtime, which is already past the idle floor.
+  if [ "$dry" != 1 ] && [ -d "$held_root" ]; then
+    for h in "$held_root"/*/*; do
+      [ -e "$h" ] || continue
+      hs=${h##*.}; case "$hs" in ''|*[!0-9]*) continue ;; esac
+      [ $(( $(date +%s) - hs )) -ge $(( hold_h * 3600 )) ] || continue
+      if rm -rf -- "${h:?}" 2>/dev/null; then
+        n_purged=$((n_purged+1))
+        echo "mac-cleanup:   lane tmp deleted held $h after its ${hold_h} h hold (verdict=lane_tmp_held_purged)"
+        [ -n "$ledger" ] && mkdir -p "$STATE_DIR" && printf '%s\t%s\t%s\t%s\tpurged_after_h=%s\n' "$(date '+%F %T %z')" "${h#"$root"/}" "-" "$h" "$hold_h" >> "$ledger"
+      fi
+    done
+    rmdir "$held_root"/* "$held_root" 2>/dev/null || true
+  fi
+  [ -n "$notice_dir" ] && held_dir="$notice_dir/.held" && mkdir -p "$held_dir"
   db=${LANE_TMP_SCHED_DB:-${AMUX_HOME:-$HOME/.amux}/amux.db}
   # Every ~/.amux/tmp/<worker>/<entry> an enabled schedule names, as
   # "<worker>/<entry>" lines. `~`, $HOME and the literal home all count.
@@ -3324,6 +3350,19 @@ reap_lane_tmp() { # <dry:0|1>
       fi
       if [ $(( $(date +%s) - since )) -lt $(( notice_min * 60 )) ]; then n_notice_wait=$((n_notice_wait+1)); continue; fi
     fi
+    dest=""
+    if [ "$hold_h" -gt 0 ] && [ "${k:-0}" -lt "$notice_kb" ] 2>/dev/null; then
+      rel=${e#"$root"/}; dest="$held_root/${rel%%/*}/${rel#*/}.$(date +%s)"
+      mkdir -p "${dest%/*}" && mv -- "$e" "$dest" 2>/dev/null || dest=""
+      if [ -n "$dest" ]; then
+        n=$((n+1)); kb=$((kb+${k:-0})); n_held=$((n_held+1))
+        echo "mac-cleanup:   lane tmp held $e at $dest ($(( ${k:-0} / 1024 ))M, nothing changed in ${LANE_TMP_IDLE_MIN} min; deleted after ${hold_h} h) (verdict=lane_tmp_entry_held)"
+        [ -n "$ledger" ] && mkdir -p "$STATE_DIR" && printf '%s\t%s\t%s\t%s\tidle_min=%s\theld=%s\n' "$(date '+%F %T %z')" "$rel" "${k:-0}" "$e" "$LANE_TMP_IDLE_MIN" "$dest" >> "$ledger"
+        [ -n "$held_dir" ] && printf -- '- %s (%sM) is now %s\n' "$e" "$(( ${k:-0} / 1024 ))" "$dest" >> "$held_dir/${rel%%/*}"
+        continue
+      fi
+      echo "mac-cleanup:   lane tmp WARN could not hold $e, deleting it instead (verdict=lane_tmp_hold_failed)"
+    fi
     if rm -rf -- "${e:?}" 2>/dev/null; then
       n=$((n+1)); kb=$((kb+${k:-0}))
       [ -n "$notice_file" ] && [ -s "$notice_file" ] && awk -F'\t' -v r="${e#"$root"/}" '$1!=r' "$notice_file" > "$notice_file.new" && mv "$notice_file.new" "$notice_file"
@@ -3339,17 +3378,27 @@ reap_lane_tmp() { # <dry:0|1>
   # cannot be told (no such worker, or an isolated one) is logged; its entries
   # still wait out the notice.
   if [ -n "$notice_dir" ]; then
-    local lane msg cmd
-    for lane in $(ls "$notice_dir" 2>/dev/null); do
+    local lane msg cmd nn nh what
+    # One message per lane, covering both entries given notice and entries held.
+    for lane in $( { ls "$notice_dir"; ls "$held_dir" 2>/dev/null; } 2>/dev/null | grep -v '\.msg$' | sort -u); do
       msg="$notice_dir/$lane.msg"
-      { echo "Cleanup notice: these idle entries in your TMPDIR will be removed by the first cleanup tick ${notice_min} min from now if nothing in them is written by then. Reading does not count."
-        echo; cat "$notice_dir/$lane"; echo
+      nn=0; [ -f "$notice_dir/$lane" ] && nn=$(grep -c '^- ' "$notice_dir/$lane")
+      nh=0; [ -n "$held_dir" ] && [ -f "$held_dir/$lane" ] && nh=$(grep -c '^- ' "$held_dir/$lane")
+      { if [ "$nn" -gt 0 ]; then
+          echo "Cleanup notice: these idle entries in your TMPDIR will be removed by the first cleanup tick ${notice_min} min from now if nothing in them is written by then. Reading does not count."
+          echo; cat "$notice_dir/$lane"; echo
+        fi
+        if [ "$nh" -gt 0 ]; then
+          echo "Cleanup moved these idle entries out of your TMPDIR (nothing in them changed in ${LANE_TMP_IDLE_MIN} min). They are deleted ${hold_h} h from now; move one back to keep it."
+          echo; cat "$held_dir/$lane"; echo
+        fi
         echo "To keep a directory: touch <dir>/.amux-keep. To keep a file: touch it, or move it into a kept directory."; } > "$msg"
+      what=""; [ "$nn" -gt 0 ] && what="$nn entr(ies)"; [ "$nh" -gt 0 ] && what="${what:+$what and }$nh held entr(ies)"
       cmd=${LANE_TMP_NOTICE_CMD:-amux send TARGET --file FILE}; cmd=${cmd//TARGET/$lane}; cmd=${cmd//FILE/$msg}
       if eval "$cmd" >/dev/null 2>&1; then
-        echo "mac-cleanup:   lane tmp told $lane about $(grep -c '^- ' "$notice_dir/$lane") entr(ies) (verdict=lane_tmp_notice_sent)"
+        echo "mac-cleanup:   lane tmp told $lane about $what (verdict=lane_tmp_notice_sent)"
       else
-        echo "mac-cleanup:   lane tmp WARN could not tell $lane about $(grep -c '^- ' "$notice_dir/$lane") entr(ies); they still wait ${notice_min} min (verdict=lane_tmp_notice_undelivered)"
+        echo "mac-cleanup:   lane tmp WARN could not tell $lane about $what;$([ "$nn" -gt 0 ] && echo " they still wait ${notice_min} min")$([ "$nh" -gt 0 ] && echo " held ones stay in $held_root/$lane for ${hold_h} h") (verdict=lane_tmp_notice_undelivered)"
       fi
     done
     rm -rf -- "${notice_dir:?}"
@@ -3357,7 +3406,7 @@ reap_lane_tmp() { # <dry:0|1>
   if [ "$dry" != 1 ] && [ -n "$cursor_file" ]; then
     if [ -n "$stopped" ]; then mkdir -p "$STATE_DIR" && printf '%s\n' "$stopped" > "$cursor_file"; else rm -f "$cursor_file"; fi
   fi
-  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, under ${keep_dir_kb}K in all), $n_marked marked .amux-keep, $n_unsaved git checkout(s) with unsaved work$([ "$n_notice" -gt 0 ] && echo "; gave notice for $n_notice large entr(ies)")$([ "$n_notice_wait" -gt 0 ] && echo "; $n_notice_wait large entr(ies) inside their ${notice_min} min notice")$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_unsized" -gt 0 ] && echo "; kept $n_unsized idle whose size could not be read (verdict=lane_tmp_size_unmeasured)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
+  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, under ${keep_dir_kb}K in all), $n_marked marked .amux-keep, $n_unsaved git checkout(s) with unsaved work$([ "$n_held" -gt 0 ] && echo "; $n_held of them held in $held_root for ${hold_h} h")$([ "$n_purged" -gt 0 ] && echo "; deleted $n_purged held past ${hold_h} h")$([ "$n_notice" -gt 0 ] && echo "; gave notice for $n_notice large entr(ies)")$([ "$n_notice_wait" -gt 0 ] && echo "; $n_notice_wait large entr(ies) inside their ${notice_min} min notice")$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_unsized" -gt 0 ] && echo "; kept $n_unsized idle whose size could not be read (verdict=lane_tmp_size_unmeasured)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
 }
 
 reap_user_tmp() { # <dry:0|1>
