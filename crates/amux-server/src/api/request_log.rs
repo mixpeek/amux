@@ -1661,6 +1661,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/board/{id}",
         methods: &["GET", "PATCH", "DELETE"],
     },
+    RouteEntry {
+        path: "/api/board/{id}/conditional-patch",
+        methods: &["POST"],
+    },
     // The workflow-engine landing (board.rs:80-83) mounted these four and did
     // not add them here, which is what reddened `rust`. Methods read off the
     // router, not guessed: capsule/verifications are GET, artifacts is
@@ -2421,6 +2425,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry {
         path: "/api/sessions/{name}/{*verb}",
         methods: ANY,
+    },
+    RouteEntry {
+        path: "/api/sessions/{name}/stop-bound",
+        methods: &["POST"],
     },
     RouteEntry {
         path: "/api/identity",
