@@ -10237,6 +10237,81 @@ mod progress_notify_dedupe_tests {
     }
 }
 
+/// AMUX-364 item 1: at most ONE owner wake per lane per 15 minutes, unless the
+/// note rode along with a status/blocked_on change or was written by a human or
+/// the coordinator. Progress notes alone never wake more often. Returns
+/// Some(reason) when the wake is withheld. FAIL OPEN: a poisoned lock delivers.
+const WAKE_WINDOW_SECS: f64 = 900.0;
+
+fn wake_author_is_privileged(author: &str) -> bool {
+    let a = author.trim().to_ascii_lowercase();
+    a.starts_with("coordinator") || matches!(a.as_str(), "james" | "human" | "ethan" | "badschaff")
+}
+
+fn wake_throttle_at(owner: &str, author: &str, state_changed: bool, now: f64) -> Option<String> {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<std::collections::HashMap<String, f64>>> = Mutex::new(None);
+    let privileged = state_changed || wake_author_is_privileged(author);
+    let Ok(mut g) = LAST.lock() else { return None };
+    let m = g.get_or_insert_with(Default::default);
+    let last = m.get(owner).copied();
+    if privileged || last.is_none_or(|at| now - at >= WAKE_WINDOW_SECS) {
+        m.insert(owner.to_string(), now);
+        return None;
+    }
+    Some(format!(
+        "{owner} was already woken in the last 15 minutes and this note changes no status or \
+         blocked_on (batched, AMUX-364); the note is saved on the card and they will see it \
+         on their next card read. Use a status change or `amux board ask` if it is urgent."
+    ))
+}
+
+fn wake_throttle(owner: &str, author: &str, state_changed: bool) -> Option<String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    wake_throttle_at(owner, author, state_changed, now)
+}
+
+#[cfg(test)]
+mod wake_throttle_tests {
+    use super::*;
+
+    #[test]
+    fn progress_notes_batch_to_one_wake_per_lane_per_15_min() {
+        let t0 = 1_000_000.0;
+        assert!(wake_throttle_at("lane-a", "peer", false, t0).is_none(), "first wakes");
+        assert!(wake_throttle_at("lane-a", "peer", false, t0 + 60.0).is_some());
+        assert!(wake_throttle_at("lane-a", "other-peer", false, t0 + 600.0).is_some());
+        assert!(wake_throttle_at("lane-a", "peer", false, t0 + 901.0).is_none(), "window over");
+        // other lane is independent
+        assert!(wake_throttle_at("lane-b", "peer", false, t0 + 61.0).is_none());
+    }
+
+    #[test]
+    fn state_change_and_privileged_authors_always_wake() {
+        let t0 = 2_000_000.0;
+        assert!(wake_throttle_at("lane-c", "peer", false, t0).is_none());
+        assert!(wake_throttle_at("lane-c", "peer", true, t0 + 1.0).is_none(), "status/blocked_on change");
+        assert!(wake_throttle_at("lane-c", "coordinator-18c1d247", false, t0 + 2.0).is_none());
+        assert!(wake_throttle_at("lane-c", "James", false, t0 + 3.0).is_none());
+        assert!(wake_throttle_at("lane-c", "peer", false, t0 + 4.0).is_some(), "peer still batched");
+    }
+
+    /// VERIFY replay: a 124-notes/hour stream (one per ~29s) from peers wakes
+    /// the lane at most 4 times in the hour.
+    #[test]
+    fn dry_run_replay_stays_at_or_under_4_wakes_per_hour() {
+        let t0 = 3_000_000.0;
+        let woken = (0..124)
+            .filter(|i| wake_throttle_at("lane-replay", "peer", false, t0 + *i as f64 * 29.0).is_none())
+            .count();
+        assert!(woken <= 4, "got {woken} wakes");
+        assert!(woken >= 1);
+    }
+}
+
 enum PatchOut {
     NotFound,
     /// Any pre-write refusal (400/409) with its exact body.
@@ -10283,6 +10358,10 @@ enum PatchOut {
         /// happens gains its consequence: a named consumer (the owner), at
         /// the next turn boundary, deduped.
         progress_notify: Option<(String, String, String)>,
+        /// AMUX-364: status or blocked_on moved in this same PATCH. Only such
+        /// a note (or one from a human/coordinator) may wake the owner more
+        /// than once per WAKE_WINDOW_SECS.
+        wake_state_changed: bool,
         /// The REVIEWER a note in `review` is actually for (AMUX-3771). Separate
         /// from `progress_notify` because owner and reviewer are different roles
         /// and the workaround this replaces was to conflate them.
@@ -15160,6 +15239,9 @@ pub async fn patch_item(
                     advisories,
                     status_transition: st,
                     progress_notify,
+                    wake_state_changed: status_event.is_some()
+                        || row.blocked_on.as_deref().map(str::trim).unwrap_or("")
+                            != next.blocked_on.as_deref().map(str::trim).unwrap_or(""),
                     // FIRE ON THE TRANSITION INTO REVIEW, not only on a note
                     // append (AMUX-3771, second pass, found by backend).
                     //
@@ -15349,6 +15431,7 @@ pub async fn patch_item(
             advisories,
             status_transition,
             progress_notify,
+            wake_state_changed,
             reviewer_notify,
         }) => {
             body["applied"] = json!(true);
@@ -15381,6 +15464,13 @@ pub async fn patch_item(
                          nobody was told; re-run `amux board ask {id}` when they are up if it \
                          needs their attention"
                     ));
+                } else if let Some(why) =
+                    wake_throttle(&owner, &caller_for_notify, wake_state_changed)
+                {
+                    // AMUX-364: batched wakes. The note is saved; only the
+                    // extra turn-boundary interruption is withheld.
+                    body["owner_notified"] = json!(false);
+                    body["owner_notify_reason"] = json!(why);
                     // THE NOTE'S CONTENT IS PART OF THE KEY (AMUX-3935).
                     //
                     // The key was (owner, card, author) with a 10-minute window, which
