@@ -107,6 +107,7 @@ fn incident_regression_duplicate_draft_resurrects_sent_message() {
         html: "",
         boundary: "bnd-test",
         attachments: &[],
+        extra_headers: &[],
     });
     // Body is base64 inside multipart — assert the ENCODED body is present.
     use base64::Engine;
@@ -126,6 +127,7 @@ fn incident_regression_duplicate_draft_resurrects_sent_message() {
         html: "",
         boundary: "bnd-test",
         attachments: &[],
+        extra_headers: &[],
     });
     assert!(
         blank.contains("In-Reply-To"),

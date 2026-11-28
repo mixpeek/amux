@@ -844,9 +844,16 @@ pub(crate) fn take_due(conn: &rusqlite::Connection, today: &str) -> rusqlite::Re
         let id = r["id"].as_str().unwrap_or("").to_string();
         conn.execute("UPDATE crm_touches SET due_announced_at=?2 WHERE id=?1", rusqlite::params![&id, now])?;
         let cid = r["contact_id"].as_str().unwrap_or("").to_string();
-        r["next"] = json!(match r["status"].as_str() {
-            Some("planned") => "draft it: read the brief, then amux crm draft <id> --stdin; the owner approves it",
-            Some("drafted") => "waiting for the owner's approval in the CRM tab (To approve)",
+        // An email in a campaign with a sending pool is sent by the CRM itself
+        // (runtime_jobs/crm_sender.rs) once approved.
+        let pooled = r["channel"].as_str() == Some("email") && conn.query_row(
+            "SELECT c.mailboxes FROM crm_sequences s JOIN crm_campaigns c ON c.id=s.campaign_id WHERE s.id=?1",
+            [r["sequence"].as_str().unwrap_or("")], |x| x.get::<_, String>(0)).map(|m| m.len() > 2).unwrap_or(false);
+        r["next"] = json!(match (r["status"].as_str(), pooled) {
+            (Some("planned"), true) => "draft it: read the brief, then amux crm draft <id> --stdin, starting the first email with a line Subject: ...; the owner approves it and the CRM sends it from the pool",
+            (Some("planned"), false) => "draft it: read the brief, then amux crm draft <id> --stdin; the owner approves it",
+            (Some("drafted"), _) => "waiting for the owner's approval in the CRM tab (To approve)",
+            (_, true) => "approved: the CRM sends it from the pool in the send window; nothing to do",
             _ => "approved: do it now, then amux crm done <id>",
         });
         if !cid.is_empty() {

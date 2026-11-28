@@ -467,7 +467,7 @@ async fn create_touch(State(state): State<AppState>, headers: HeaderMap, Json(bo
 }
 
 /// The touch as a JSON row with the person's and company's names.
-fn touch_row(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<Option<Value>> {
+pub(crate) fn touch_row(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<Option<Value>> {
     Ok(query_rows_json(conn,
         "SELECT t.*, COALESCE(c.name,'') AS contact_name, COALESCE(a.name,'') AS account_name FROM crm_touches t \
          LEFT JOIN crm_contacts c ON c.id=t.contact_id LEFT JOIN crm_accounts a ON a.id=t.account_id WHERE t.id=?1 AND t.deleted IS NULL",
@@ -585,7 +585,18 @@ async fn approve_touch(State(state): State<AppState>, OriginalUri(uri): Original
             // A cold email in a campaign with mailboxes goes out from the
             // ready inbox with the fewest sends today (crm_mailboxes.rs).
             match super::crm_mailboxes::pick(conn, &id) {
-                Ok(Some(m)) => { conn.execute("UPDATE crm_touches SET mailbox=?2 WHERE id=?1", rusqlite::params![&id, &m])?; }
+                Ok(Some(m)) => {
+                    // The CRM sends this one itself (runtime_jobs/crm_sender.rs),
+                    // exactly as approved, so its subject has to be in it: a
+                    // first email starts with a `Subject:` line; a follow-up
+                    // without one goes in the same thread as "Re:".
+                    conn.execute("UPDATE crm_touches SET mailbox=?2 WHERE id=?1", rusqlite::params![&id, &m])?;
+                    if let Some(why) = super::crm_mailboxes::subject_refusal(conn, &id) {
+                        conn.execute("UPDATE crm_touches SET mailbox='' WHERE id=?1", [&id])?;
+                        *slot(&wr) = Some(("crm_email_no_subject", why, String::new()));
+                        return Ok(WriteOutcome { applied: false, events: vec![] });
+                    }
+                }
                 Ok(None) => {}
                 Err(why) => {
                     *slot(&wr) = Some(("crm_mailbox_cap", why, String::new()));
@@ -686,6 +697,41 @@ pub(crate) fn mark_accepted(conn: &rusqlite::Connection, contact: &str) -> rusql
     )
 }
 
+/// Mark a touch done (or failed): its activity line, and its sequence's next
+/// step planned. Err("not_found") or Err("not_approved") (an outward touch the
+/// owner has not approved). Shared by `/done` and the CRM's own sender
+/// (runtime_jobs/crm_sender.rs), so a send the server makes reads exactly like
+/// one a worker reports.
+pub(crate) fn record_done(conn: &rusqlite::Connection, id: &str, failed: bool, result: &str, url: &str) -> rusqlite::Result<Result<Value, &'static str>> {
+    let cur: Option<(String, String, String, String, String)> = conn.query_row(
+        "SELECT status, action, channel, contact_id, body FROM crm_touches WHERE id=?1 AND deleted IS NULL", [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).ok();
+    let Some((status, action, channel, contact, text)) = cur else { return Ok(Err("not_found")) };
+    // Reaching someone outside needs the owner's approval first; a note
+    // or a follow is the worker's own business.
+    if !failed && super::crm_outbound::outward(&action) && status != "approved" {
+        return Ok(Err("not_approved"));
+    }
+    let now = now_secs();
+    conn.execute(
+        "UPDATE crm_touches SET status=?1, done_at=?2, result=?3, result_url=?4, updated=?2 WHERE id=?5",
+        rusqlite::params![if failed { "failed" } else { "done" }, now, result, url, id],
+    )?;
+    if !failed && !contact.is_empty() {
+        conn.execute(
+            "INSERT OR IGNORE INTO crm_interactions (id,contact_id,date,type,notes,created,updated,direction,subject,message_id) VALUES (?1,?2,?3,?4,?5,?6,?6,'out',?7,?8)",
+            rusqlite::params![ulid::Ulid::new().to_string(), &contact, chrono::Local::now().format("%Y-%m-%d").to_string(),
+                if channel == "email" { "email" } else { "dm" }, if result.is_empty() { text.clone() } else { format!("{text}\n\n{result}") },
+                now, format!("{channel} {action}"), format!("touch:{id}")],
+        )?;
+    }
+    // Its sequence's next step is planned now, due its days later.
+    let next = if failed { None } else { super::crm_outbound::advance(conn, id)? };
+    let mut row = touch_row(conn, id)?.unwrap_or(json!({ "id": id }));
+    row["next_touch"] = json!(next);
+    Ok(Ok(row))
+}
+
 async fn done_touch(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>, Json(body): Json<Value>) -> Response {
     let failed = body.get("failed").and_then(Value::as_bool).unwrap_or(false);
     let result = body.get("result").and_then(Value::as_str).unwrap_or("").to_string();
@@ -696,38 +742,19 @@ async fn done_touch(State(state): State<AppState>, headers: HeaderMap, Path(id):
     let res = state
         .store
         .write_async(move |conn| {
-            let cur: Option<(String, String, String, String, String, String)> = conn.query_row(
-                "SELECT status, action, channel, contact_id, body, account_id FROM crm_touches WHERE id=?1 AND deleted IS NULL", [&id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).ok();
-            let Some((status, action, channel, contact, text, account)) = cur else { *slot(&w) = Some(Err("not_found")); return Ok(WriteOutcome { applied: false, events: vec![] }) };
-            // Reaching someone outside needs the owner's approval first; a note
-            // or a follow is the worker's own business.
-            let outward = super::crm_outbound::outward(&action);
-            if !failed && outward && status != "approved" {
-                *slot(&w) = Some(Err("not_approved"));
-                return Ok(WriteOutcome { applied: false, events: vec![] });
-            }
-            let now = now_secs();
-            conn.execute(
-                "UPDATE crm_touches SET status=?1, done_at=?2, result=?3, result_url=?4, updated=?2 WHERE id=?5",
-                rusqlite::params![if failed { "failed" } else { "done" }, now, &result, &url, &id],
-            )?;
-            if !failed && !contact.is_empty() {
-                conn.execute(
-                    "INSERT OR IGNORE INTO crm_interactions (id,contact_id,date,type,notes,created,updated,direction,subject,message_id) VALUES (?1,?2,?3,?4,?5,?6,?6,'out',?7,?8)",
-                    rusqlite::params![ulid::Ulid::new().to_string(), &contact, chrono::Local::now().format("%Y-%m-%d").to_string(),
-                        if channel == "email" { "email" } else { "dm" }, if result.is_empty() { text.clone() } else { format!("{text}\n\n{result}") },
-                        now, format!("{channel} {action}"), format!("touch:{id}")],
-                )?;
-            }
-            // Its sequence's next step is planned now, due its days later.
-            let next = if failed { None } else { super::crm_outbound::advance(conn, &id)? };
-            let mut row = touch_row(conn, &id)?.unwrap_or(json!({ "id": id }));
-            row["next_touch"] = json!(next);
-            *slot(&w) = Some(Ok(row));
-            // The touch's owner refreshes: the person, or the company for a company touch.
-            let owner = if contact.is_empty() { ev("crm_account", &account, MutationKind::Updated) } else { ev("crm_contact", &contact, MutationKind::Updated) };
-            Ok(WriteOutcome { applied: true, events: vec![ev("crm_touch", &id, MutationKind::Updated), owner] })
+            let r = record_done(conn, &id, failed, &result, &url)?;
+            let applied = r.is_ok();
+            let events = match &r {
+                Ok(t) => {
+                    let (contact, account) = (t["contact_id"].as_str().unwrap_or("").to_string(), t["account_id"].as_str().unwrap_or("").to_string());
+                    // The touch's owner refreshes: the person, or the company for a company touch.
+                    let owner = if contact.is_empty() { ev("crm_account", &account, MutationKind::Updated) } else { ev("crm_contact", &contact, MutationKind::Updated) };
+                    vec![ev("crm_touch", &id, MutationKind::Updated), owner]
+                }
+                Err(_) => vec![],
+            };
+            *slot(&w) = Some(r);
+            Ok(WriteOutcome { applied, events })
         })
         .await;
     if let Err(e) = res {
@@ -869,7 +896,16 @@ async fn capture(state: &AppState) {
     for r in replied {
         emit(state, "crm.contact.replied", r).await;
     }
+    let paused = std::mem::take(&mut *slot(&PAUSED));
+    for p in paused {
+        tracing::warn!(target: "amux::crm", address = p["address"].as_str().unwrap_or(""), measured = true, n_considered = p["sent_7d"].as_i64().unwrap_or(0),
+            verdict = "crm_mailbox_paused_bounces", "a sending inbox bounced too much and was paused");
+        emit(state, "crm.mailbox.paused", p).await;
+    }
 }
+
+/// Inboxes a bounce pass paused, emitted as crm.mailbox.paused after the write.
+static PAUSED: Mutex<Vec<Value>> = Mutex::new(Vec::new());
 
 static REPLIED: Mutex<Vec<Value>> = Mutex::new(Vec::new());
 
@@ -895,7 +931,7 @@ pub(crate) fn capture_events(conn: &rusqlite::Connection) -> rusqlite::Result<(u
         }
     };
     let mut st = conn.prepare(
-        "SELECT id, type, data FROM session_events WHERE id>?1 AND type IN ('email.received','linkedin.message_received') ORDER BY id LIMIT 500",
+        "SELECT id, type, data FROM session_events WHERE id>?1 AND (type='email.received' OR type LIKE '%.message_received') ORDER BY id LIMIT 500",
     )?;
     let rows: Vec<(i64, String, String)> = st.query_map([cursor], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default())))?.filter_map(Result::ok).collect();
     let mut last = cursor;
@@ -904,6 +940,15 @@ pub(crate) fn capture_events(conn: &rusqlite::Connection) -> rusqlite::Result<(u
         last = id;
         let d: Value = serde_json::from_str(&data).unwrap_or(Value::Null);
         let (contact, name, channel, subject, snippet, msg) = if ty == "email.received" {
+            // A bounce of a cold email lands in the inbox that sent it: the
+            // person reads bounced, and an inbox bouncing too much is paused.
+            if let Some(failed) = super::crm_mailboxes::bounce_of(&d) {
+                let inbox = d.get("account").and_then(Value::as_str).unwrap_or("").to_lowercase();
+                if let Some(p) = super::crm_mailboxes::record_bounce(conn, &inbox, &failed)? {
+                    slot(&PAUSED).push(p);
+                }
+                continue;
+            }
             if d.get("bulk").and_then(Value::as_bool) == Some(true) {
                 continue;
             }
@@ -923,8 +968,14 @@ pub(crate) fn capture_events(conn: &rusqlite::Connection) -> rusqlite::Result<(u
                 continue;
             }
             let (cid, name) = hits[0].clone();
-            (cid, name, "linkedin", "LinkedIn message".to_string(), unescape_html(d.get("snippet").and_then(Value::as_str).unwrap_or("")),
-                format!("linkedin:{}", d.get("key").and_then(Value::as_str).unwrap_or("")))
+            // Any source's `<source>.message_received` (linkedin, x, ...): the
+            // shape every inbound message source writes (from_name, snippet or
+            // text, key).
+            let source = ty.trim_end_matches(".message_received");
+            let text = d.get("snippet").or_else(|| d.get("text")).and_then(Value::as_str).unwrap_or("");
+            let label = if source == "linkedin" { "LinkedIn message".to_string() } else { format!("{source} message") };
+            (cid, name, if source == "linkedin" { "linkedin" } else { source }, label, unescape_html(text),
+                format!("{source}:{}", d.get("key").and_then(Value::as_str).unwrap_or("")))
         };
         let ix = ulid::Ulid::new().to_string();
         let added = conn.execute(
@@ -982,7 +1033,9 @@ pub(crate) fn capture_sent(conn: &rusqlite::Connection, path: &std::path::Path) 
     let mut n = 0;
     for line in buf[..upto].lines() {
         let Ok(r) = serde_json::from_str::<Value>(line) else { continue };
-        if r.get("blocked").is_some() || r.get("delivered") == Some(&json!(false)) {
+        // The CRM sender's own sends are recorded on their touch already
+        // (record_done), and warm-up mail is between the pool's own inboxes.
+        if r.get("blocked").is_some() || r.get("delivered") == Some(&json!(false)) || r.get("crm_touch").is_some() || r.get("endpoint").and_then(Value::as_str) == Some("crm-warmup") {
             continue;
         }
         let subject = r.get("subject").and_then(Value::as_str).unwrap_or("").to_string();

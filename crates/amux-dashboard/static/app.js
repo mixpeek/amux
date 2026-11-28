@@ -48507,9 +48507,12 @@ function _crmMailboxesHtml(addrs, pool) {
     if (!m) return '<div class="crm-meta">' + esc(a) + ': not in the pool</div>';
     return '<div class="crm-row crm-mbox" data-address="' + esc(a) + '"><div class="crm-main"><div class="crm-line"><span class="crm-name">' + esc(a) + '</span>'
       + '<span class="cx-pill ' + (_CRM_MAILBOX_PILL[m.status] || 'cx-idle') + '">' + esc(m.status) + '</span></div>'
-      + '<div class="crm-meta crm-wrap">' + esc([m.sent_today + ' of ' + m.daily_cap + ' today', m.sent_7d + ' this week', m.status === 'warming' && m.warmup_ends ? 'warm until ' + m.warmup_ends : '',
-        m.bounce_rate != null ? 'bounces ' + pct(m.bounce_rate) : '', m.reply_rate != null ? 'replies ' + pct(m.reply_rate) : ''].filter(Boolean).join(' · ')) + '</div>'
-      + (m.why_not_ready ? '<div class="crm-meta crm-wrap">Not sending: ' + esc(m.why_not_ready) + '</div>' : '') + '</div>'
+      + '<div class="crm-meta crm-wrap">' + esc([m.sent_today + ' of ' + (m.cap_today != null && m.cap_today < m.daily_cap && m.status !== 'warming' ? m.cap_today + ' (ramping to ' + m.daily_cap + ')' : m.daily_cap) + ' today', m.sent_7d + ' this week', m.status === 'warming' && m.warmup_ends ? 'warm until ' + m.warmup_ends : '',
+        m.placement_7d != null ? 'warm-up inbox ' + pct(m.placement_7d) + ' of ' + m.warmup_checked_7d : '',
+        m.bounce_rate != null ? 'bounces ' + pct(m.bounce_rate) : '', m.reply_rate != null ? 'replies ' + pct(m.reply_rate) : '',
+        m.dns ? (m.dns.ok ? 'DNS ok' : (m.dns.measured ? 'DNS: ' + (m.dns.problems || []).join('; ') : 'DNS not checked')) : ''].filter(Boolean).join(' · ')) + '</div>'
+      + (m.why_not_ready ? '<div class="crm-meta crm-wrap">Not sending: ' + esc(m.why_not_ready) + '</div>' : '')
+      + (m.paused_reason ? '<div class="crm-meta crm-wrap">Paused: ' + esc(m.paused_reason) + '</div>' : '') + '</div>'
       + '<select class="input crm-mbox-status" aria-label="Status of ' + esc(a) + '" data-address="' + esc(a) + '" onchange="_crmMailboxStatus(this.dataset.address,this.value)">'
       + ['warming', 'active', 'reserve', 'paused'].map(st => '<option' + (m.status === st ? ' selected' : '') + '>' + st + '</option>').join('') + '</select></div>';
   }).join('') + '</div>'

@@ -12,7 +12,7 @@
 //! opens the newest thread, which marks it read. The job never clicks, types
 //! or opens a thread.
 //!
-//! An unread row is one event, keyed by participant names and snippet, so one
+//! A new row (read or not) is one event, keyed by participant names and snippet, so one
 //! new message fires once and the next message in the same conversation fires
 //! again. The first read only records what is there: messages already in the
 //! list are history, not news. The list carries no thread or profile link
@@ -97,11 +97,13 @@ pub(crate) fn row_key(row: &Value) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))[..24].to_string()
 }
 
-/// The rows to announce: unread, from someone else, and not seen before.
-/// Pure, so the cut is tested without LinkedIn.
+/// The rows to announce: from someone else and not seen before, read or not.
+/// A message the owner already opened on the phone is still news to the
+/// worker waiting on that person (it used to need `unread`, so a reply read
+/// first never fired and never stopped the sequence). Pure, so the cut is
+/// tested without LinkedIn.
 pub(crate) fn fresh<'a>(rows: &'a [Value], seen: &[String]) -> Vec<&'a Value> {
     rows.iter()
-        .filter(|r| r["unread"].as_bool().unwrap_or(false))
         .filter(|r| !r["name"].as_str().unwrap_or("").is_empty())
         .filter(|r| !r["snippet"].as_str().unwrap_or("").starts_with("You:"))
         .filter(|r| !seen.contains(&row_key(r)))
@@ -225,7 +227,7 @@ async fn tick(state: &AppState, home: &Path, every: i64) {
         let over = w.seen.len().saturating_sub(SEEN_CAP);
         w.seen.drain(..over);
         tracing::info!(target: "amux::linkedin_events", emitted, measured = true, n_considered = rows.len(),
-            verdict = "linkedin_events_emitted", "LinkedIn message list read; each new unread message is one linkedin.message_received event");
+            verdict = "linkedin_events_emitted", "LinkedIn message list read; each new message is one linkedin.message_received event");
     }
     persist(home, &w);
 }
@@ -259,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn only_an_unseen_unread_message_from_someone_else_is_news() {
+    fn an_unseen_message_from_someone_else_is_news_read_or_not() {
         let rows = vec![
             row("Raj Das", "Thanks, talk Monday", true),
             row("Ben Walsh", "Sounds good", false),
@@ -268,7 +270,7 @@ mod tests {
         ];
         let seen = vec![row_key(&rows[3])];
         let names: Vec<&str> = fresh(&rows, &seen).iter().map(|r| r["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["Raj Das"]);
+        assert_eq!(names, vec!["Raj Das", "Ben Walsh"], "Ben's message was read first and still fires");
     }
 
     #[test]

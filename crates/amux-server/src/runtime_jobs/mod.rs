@@ -82,6 +82,7 @@ pub mod task_titles;
 pub mod desc_refresh;
 pub mod email_events;
 pub mod linkedin_events;
+pub mod crm_sender;
 pub mod crm_watch;
 pub mod event_dispatch;
 pub mod host_guard;
@@ -459,6 +460,7 @@ mod tests {
             ("board_hygiene.rs", include_str!("board_hygiene.rs")),
             ("email_events.rs", include_str!("email_events.rs")),
             ("linkedin_events.rs", include_str!("linkedin_events.rs")),
+            ("crm_sender.rs", include_str!("crm_sender.rs")),
         ];
         // The control first: this cell is worthless unless the literal it looks
         // for is one these files COULD contain, so prove the deriver produces

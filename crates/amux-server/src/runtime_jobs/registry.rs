@@ -102,6 +102,7 @@ pub mod ids {
     pub const EMAIL_EVENTS: &str = "email-events";
     pub const LINKEDIN_EVENTS: &str = "linkedin-events";
     pub const CRM_WATCH: &str = "crm-watch";
+    pub const CRM_SENDER: &str = "crm-sender";
     pub const ORCH_RUNTIME: &str = "orchestrator-runtime";
     pub const EVENT_PROCESSORS: &str = "event-processors";
     pub const SCAN: &str = "terminal-scan";
@@ -218,6 +219,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::EMAIL_EVENTS,
     ids::LINKEDIN_EVENTS,
     ids::CRM_WATCH,
+    ids::CRM_SENDER,
     ids::STATUS_HISTORY,
     ids::BROWSER_LOGIN_SYNC,
     ids::CONNECTOR_MAINTENANCE,
@@ -917,6 +919,17 @@ pub const CATALOG: &[Doc] = &[
         env: &[EnvControl { var: "AMUX_CRM_WATCH_SECS", effect: "seconds between passes, default 120; 0 stops CRM watching and capture", off: Some("0") }],
         pref: None,
         detail: Some("/api/crm/channels?watch=1"),
+    },
+    Doc {
+        id: ids::CRM_SENDER,
+        name: "CRM sender and warm-up",
+        purpose: "Every minute, for the CRM's sending pool: checks each sending domain's MX, SPF, DKIM, DMARC and Spamhaus listing once a day; sends each email touch the owner approved in a campaign with mailboxes from its picked inbox, exactly as approved, inside the send window, spaced several minutes apart per inbox, under the inbox's ramped daily cap, with a List-Unsubscribe header, then records it done; and has the pool's inboxes mail each other as warm-up, moving any copy that landed in Spam to the inbox and recording where each landed (placement_7d in GET /api/crm/mailboxes).",
+        env: &[
+            EnvControl { var: "AMUX_CRM_SENDER_SECS", effect: "seconds between passes, default 60; 0 stops cold sends, warm-up and DNS checks", off: Some("0") },
+            EnvControl { var: "AMUX_CRM_WARMUP", effect: "0 stops warm-up mail between the pool's inboxes; cold sends go on", off: Some("0") },
+        ],
+        pref: None,
+        detail: Some("/api/crm/mailboxes"),
     },
     Doc {
         id: ids::DESC_REFRESH,

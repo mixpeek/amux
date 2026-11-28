@@ -690,6 +690,26 @@ pub async fn send(
         return refuse_send(&ctx, &headers, "send", &from_acct);
     }
 
+    // The CRM's sending pool sends only through the CRM: the owner approves a
+    // touch once and runtime_jobs/crm_sender.rs sends it, spaced and capped.
+    // A worker sending from a pool inbox here would be a second, unspaced
+    // send of the same email (owner, 2026-11-27, Instantly parity).
+    if hdr_lane(&headers).is_some() {
+        let store = state.store.clone();
+        let acct = from_acct.to_lowercase();
+        let pooled = tokio::task::spawn_blocking(move || {
+            store.read().ok().map(|c| c.query_row("SELECT 1 FROM crm_mailboxes WHERE address=?1", [&acct], |_| Ok(true)).unwrap_or(false)).unwrap_or(false)
+        }).await.unwrap_or(false);
+        if pooled {
+            tracing::info!(from = %from_acct, measured = true, n_considered = 1, verdict = "crm_pool_send_by_crm", "a worker send from a CRM pool inbox was refused: the CRM sends those");
+            return err(StatusCode::CONFLICT, json!({
+                "error": format!("{from_acct} is in the CRM's sending pool: the CRM sends its email itself once the owner approves the touch"),
+                "code": "crm_pool_send_by_crm",
+                "next": "draft the email touch (PATCH /api/crm/touches/<id> with a first line Subject: ...); the owner approves it and the CRM sends it from the pool",
+            }));
+        }
+    }
+
     // EXTERNAL-SEND APPROVAL GATE (AMUX-3510) — before the etiquette guards:
     // a worker-originated send reaching any non-internal recipient is frozen
     // for a human, not sent. See email_approval.rs for the incident and the

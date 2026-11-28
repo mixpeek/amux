@@ -361,6 +361,10 @@ pub struct MimeSpec<'a> {
     /// message, byte-for-byte as before; non-empty wraps that body in a
     /// multipart/mixed with one base64 part per file.
     pub attachments: &'a [Attachment],
+    /// Extra top-level headers (name, value), such as List-Unsubscribe on a
+    /// cold email from the CRM's sending pool. A name or value with CR or LF
+    /// is dropped, so no caller can inject a header.
+    pub extra_headers: &'a [(String, String)],
 }
 
 /// A header-safe filename: no quotes or CR/LF that could break the
@@ -415,6 +419,11 @@ pub fn build_rfc822(spec: &MimeSpec) -> String {
             spec.references
         };
         lines.push(format!("References: {refs}"));
+    }
+    for (k, v) in spec.extra_headers {
+        if !k.is_empty() && !k.contains(['\r', '\n', ':']) && !v.contains(['\r', '\n']) {
+            lines.push(format!("{k}: {v}"));
+        }
     }
     lines.push(String::new());
     // The multipart/alternative body — a sub-part of the mixed container when
@@ -1435,6 +1444,26 @@ impl GmailClient {
         include_signature: bool,
         attachments: &[Attachment],
     ) -> Result<Value, String> {
+        self.compose_send_with_headers(account, to, subject, body, cc, in_reply_to, references, thread_id, include_signature, attachments, &[]).await
+    }
+
+    /// [`Self::compose_send`] with extra top-level headers (the CRM sender's
+    /// List-Unsubscribe).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn compose_send_with_headers(
+        &self,
+        account: &str,
+        to: &str,
+        subject: &str,
+        body: &str,
+        cc: &str,
+        in_reply_to: &str,
+        references: &str,
+        thread_id: &str,
+        include_signature: bool,
+        attachments: &[Attachment],
+        extra_headers: &[(String, String)],
+    ) -> Result<Value, String> {
         // The send-as entry carries both the signature and the display name.
         // Without the name the From header is the bare address, and recipients
         // see "ethan@mixpeek.com" with a blank avatar instead of the person.
@@ -1478,6 +1507,7 @@ impl GmailClient {
             html: &html,
             boundary: &boundary,
             attachments,
+            extra_headers,
         });
         let mut send_body = Map::new();
         send_body.insert("raw".into(), json!(base64url(rfc822.as_bytes())));
@@ -1498,6 +1528,27 @@ impl GmailClient {
 
     /// Python `_gmail_find_message_by_rfc822`: indexed `rfc822msgid:` lookup
     /// -> metadata resource (or None).
+    /// Where a message carrying `token` sits in `account`'s mailbox: its Gmail
+    /// id and labels (searched in:anywhere, so Spam counts), or None when no
+    /// message matches. Err when the search itself failed, which is not "missing".
+    pub async fn locate_token(&self, account: &str, token: &str) -> Result<Option<(String, Vec<String>)>, String> {
+        let list = self.list_ids(account, &format!("\"{token}\" in:anywhere"), 1, None).await?;
+        let Some(id) = list.get("messages").and_then(Value::as_array).and_then(|a| a.first()).and_then(|m| m.get("id")).and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let url = format!("{GMAIL_BASE}/messages/{id}?format=minimal");
+        let m = self.api(account, "GET", &url, None).await?;
+        let labels = m.get("labelIds").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+        Ok(Some((id.to_string(), labels)))
+    }
+
+    /// Add and remove labels on one message (warm-up: out of Spam, into the
+    /// inbox, marked important).
+    pub async fn modify_labels(&self, account: &str, gmail_id: &str, add: &[&str], remove: &[&str]) -> Result<(), String> {
+        let url = format!("{GMAIL_BASE}/messages/{gmail_id}/modify");
+        self.api(account, "POST", &url, Some(&json!({ "addLabelIds": add, "removeLabelIds": remove }))).await.map(|_| ())
+    }
+
     pub async fn find_message_by_rfc822(&self, account: &str, rfc822_id: &str) -> Option<Value> {
         let rid = rfc822_id
             .trim()
@@ -2899,6 +2950,7 @@ mod tests {
             html: "<p>hello</p>",
             boundary: "=_bnd",
             attachments: std::slice::from_ref(&att),
+            extra_headers: &[],
         };
         let msg = build_rfc822(&spec);
         assert!(
@@ -2924,6 +2976,7 @@ mod tests {
         };
         let spec2 = MimeSpec {
             attachments: std::slice::from_ref(&att2),
+            extra_headers: &[],
             ..spec
         };
         let msg2 = build_rfc822(&spec2);
@@ -3135,6 +3188,7 @@ mod tests {
             html: "<div>plain body</div>",
             boundary: "=_amux_test",
             attachments: &[],
+            extra_headers: &[],
         };
         let msg = build_rfc822(&spec);
         let want = concat!(
@@ -3177,6 +3231,7 @@ mod tests {
             html: "h",
             boundary: "=_b",
             attachments: &[],
+            extra_headers: &[],
         };
         let msg = build_rfc822(&spec);
         assert!(!msg.contains("In-Reply-To"));
@@ -3197,6 +3252,7 @@ mod tests {
             html: "h",
             boundary: "=_b",
             attachments: &[],
+            extra_headers: &[],
         };
         let msg = build_rfc822(&spec);
         assert!(msg.contains("References: <only@id>\r\n"), "{msg}");
