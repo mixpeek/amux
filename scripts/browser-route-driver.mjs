@@ -405,6 +405,9 @@ export async function route(ctx,verb,b={},reopened=false) {
       state.previous_routes=state.previous_routes.filter(p=>p!==prior);atomic(ctx.receipt,state);
     }
   }
+  // GitHub #468: going to a URL is the `navigate` verb, not an action, so
+  // `action {"action":"navigate"}` was refused as unknown. Map the common names.
+  if(verb==='action'&&['navigate','goto','open','go'].includes(String(b.action||'').toLowerCase())&&b.url) {verb='navigate';b={url:b.url};}
   try {
     if(verb==='goal')return await goal(ctx,state,b);
     const backend=BACKENDS[state.backend];
@@ -439,7 +442,7 @@ export async function route(ctx,verb,b={},reopened=false) {
   }
 }
 export async function run(input) {
-  try {return await route(input.context,input.verb,input.body||{});}catch(e){return {error:e.message,status:e.status||502,attempts:e.attempts,route:e.route,...(input.context.cleanup_events?.length?{cleanup_events:input.context.cleanup_events}:{})};}
+  try {return await route(input.context,input.verb,input.body||{});}catch(e){return {error:e.message,status:e.status||502,attempts:e.attempts,route:e.route,...(e.payload?.actions?{actions:e.payload.actions}:{}),...(input.context.cleanup_events?.length?{cleanup_events:input.context.cleanup_events}:{})};}
 }
 // Node canonicalizes the module URL, but keeps the caller's symlink spelling
 // in argv. Compare canonical paths so /tmp on macOS still executes the driver.

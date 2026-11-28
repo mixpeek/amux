@@ -83,6 +83,11 @@ try {
   const crashedStop=await request('stop',{},crashed);
   prove('stop retires an already-gone owned CDP target after SIGKILL',!crashedStop.error&&crashedStop.cleanup_verdict==='owned_cdp_already_closed'&&!existsSync(receiptFor(crashed.session)));
   await poll(async()=> (await getText(cdCtx)).includes('Authenticated route proof'));
+  // GitHub #468: `action {"action":"navigate"}` goes to the URL instead of answering "unknown action".
+  const navAction=await request('action',{action:'navigate',url:siteUrl+'/protected'},cdCtx);
+  prove('a navigate action on the route goes to the URL',!navAction.error&&navAction.url===siteUrl+'/protected');
+  const unknown=await request('action',{action:'dance'},cdCtx);
+  prove('an unknown route action is refused',!!unknown.error);
   // GitHub #466: a closed route browser reopens on the next verb instead of
   // answering 409 to every verb; status says it is closed; an action is not replayed.
   const killRoute=async(port)=>{const b=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);const s=await b.newBrowserCDPSession();const pid=(await s.send('SystemInfo.getProcessInfo')).processInfo.find(p=>p.type==='browser').id;await b.close();process.kill(pid,'SIGKILL');await poll(async()=>{try{process.kill(pid,0);return false;}catch{return true;}});};

@@ -1685,8 +1685,25 @@ fn start_status(e: &anyhow::Error) -> StatusCode {
 /// retrying it opens another tab in the human's Chrome. Keep the ordinary
 /// failure shape unchanged; enrich only the typed pre-spawn refusal.
 fn start_failure(e: &anyhow::Error) -> (StatusCode, Value) {
+    start_failure_in(e, &chrome::amux_home())
+}
+
+fn start_failure_in(e: &anyhow::Error, home: &std::path::Path) -> (StatusCode, Value) {
     let status = start_status(e);
     let mut body = json!({ "error": with_cause(e) });
+    // GitHub #468: a missing profile named no way forward, so one worker
+    // retried the same start 132 times in a week. Name the profiles that exist.
+    if let Some(missing) = e.downcast_ref::<chrome::ProfileMissing>() {
+        let names: Vec<String> = chrome::list_profiles(home, false).into_iter().map(|p| p.name).collect();
+        tracing::warn!(target: "browser", profile = %missing.profile, n_profiles = names.len(),
+            verdict = "browser_profile_missing", measured = true, n_considered = names.len(),
+            "browser start named a profile with no directory; the refusal lists the ones that exist");
+        body["error_code"] = json!("browser_profile_missing");
+        body["retryable"] = json!(false);
+        body["profile"] = json!(missing.profile);
+        body["profiles"] = json!(names);
+        body["pick_with"] = json!("amux browser for <url> names the one profile for a site");
+    }
     if let Some(conflict) = e.downcast_ref::<chrome::ExternalProfileInUse>() {
         body["error_code"] = json!("human_chrome_profile_in_use");
         body["retryable"] = json!(false);
@@ -6046,6 +6063,14 @@ mod tests {
             ),
             "{message}"
         );
+        // GitHub #468: the refusal names the profiles that do exist.
+        std::fs::create_dir_all(home.path().join("playwright-auth/profiles/ethan")).unwrap();
+        let (status, body) = start_failure_in(&missing, home.path());
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error_code"], "browser_profile_missing");
+        assert_eq!(body["retryable"], false);
+        assert_eq!(body["profile"], "no-such-profile");
+        assert_eq!(body["profiles"], json!(["ethan"]));
         let wrapped = chrome::import_chrome_profile(home.path(), &chrome_dir, "no-such-profile")
             .unwrap_err()
             .context("while starting the browser");
