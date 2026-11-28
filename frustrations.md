@@ -6333,3 +6333,15 @@ SYMPTOM: SCHED-3438's check piped `cat land.log land.log.1` into awk. land.log.1
 COST: about 75 minutes of a lane waiting on a wake that could not fire.
 MECHANISM: wake checks run as `/bin/bash -o pipefail -c` (scheduler.rs shell_schedule_command, kept so a check piped into tail reports the check's failure) with the server's working directory, which is /. Exit 1 means "not yet", so a failing early stage or a relative path reads exactly like a condition not yet true. `amux wake help` named neither.
 FIX: `amux wake help` says how a check runs (bash -o pipefail from /, 60s, exit 0 / 1 / other). `amux wake --when` runs the check once at creation the same way and prints the result: passes now, "not yet", verdict=wake_check_pipefail when it fails only under pipefail (with the failing stage's message), verdict=wake_check_broken, or verdict=wake_check_timeout. The schedule is still created. scripts/test-wake-check-probe.sh covers each case; the schedule form in the dashboard is not changed.
+
+## The e2e teardown ratchet counted teardowns written the way it asks as unguarded, and held checks red
+AREA: ci
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-11-28
+SESSION: amux-frustrations
+CARD: AF-1437
+SYMPTOM: `checks` red on main from ddf266d3b (2026-11-27 22:43Z) on: tests/e2e-teardown-ratchet.test.mjs "unguarded teardowns rose to 52 (baseline 47)". The five new blocks (e2e/chat-reconnect.spec.ts x3, e2e/files-worker-only.spec.ts x2) already did `await cleanup('...', async () => { await ... }, info)`, which is the fix the assertion's own message prescribes.
+COST: main's `checks` red for 5 consecutive commits over about 4 hours, a CI-red card, and a deploy-wake listing the red on every landing lane.
+MECHANISM: unguarded() matched every `await` in the finally body, including the awaits inside cleanup()'s callback, which cleanup() catches. So any cleanup() whose callback awaits anything read as unguarded.
+FIX: unguarded() drops the argument list of each `cleanup(...)` call (by paren depth) before counting. The count is back to the same 47 blocks as the last green run. A new unit case pins that a cleanup-wrapped block is guarded and a bare await before or after it is not; removing the strip turns both tests red.

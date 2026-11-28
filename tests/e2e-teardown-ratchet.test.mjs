@@ -78,12 +78,46 @@ function finallyBodies(src) {
  * is already safe, which is what makes the number able to fall.
  */
 function unguarded(body) {
+  // What runs INSIDE cleanup()'s callback is caught by cleanup() itself, so it
+  // is dropped before counting. Without this, every block written the way the
+  // assertion below asks for (`await cleanup('x', async () => { await ... })`)
+  // read as unguarded: chat-reconnect.spec.ts and files-worker-only.spec.ts
+  // took the ratchet from 47 to 52 on 2026-11-27 with five correct blocks.
+  body = withoutCleanupArgs(body);
   const doesWork = /\bawait\b|\brequest\./.test(body);
   if (!doesWork) return false;
   const awaits = body.match(/await\s+[A-Za-z_$][\w$.]*/g) || [];
   if (awaits.length === 0) return true;
   return !awaits.every(a => /await\s+cleanup\b/.test(a));
 }
+
+/** `body` with the argument list of every `cleanup(...)` call removed, matched by paren depth. */
+function withoutCleanupArgs(body) {
+  let out = '', i = 0;
+  const re = /\bcleanup\s*\(/g;
+  let m;
+  while ((m = re.exec(body)) !== null) {
+    out += body.slice(i, m.index + m[0].length);
+    let depth = 1, j = m.index + m[0].length;
+    while (j < body.length && depth > 0) {
+      if (body[j] === '(') depth++;
+      else if (body[j] === ')') depth--;
+      j++;
+    }
+    out += ')';
+    i = j;
+    re.lastIndex = j;
+  }
+  return out + body.slice(i);
+}
+
+test('a teardown routed through cleanup() is guarded, whatever its callback awaits', () => {
+  const wrapped = `\n await cleanup('x', async () => {\n await page.unroute(R);\n await request.delete(u);\n }, info);\n`;
+  assert.equal(unguarded(wrapped), false, 'awaits inside cleanup()\'s callback are caught by cleanup()');
+  assert.equal(unguarded(`\n await page.close();\n`), true, 'a bare await in finally can throw');
+  assert.equal(unguarded(wrapped + ` await page.close();\n`), true, 'an await after the cleanup() call is still bare');
+  assert.equal(unguarded(`\n await cleanup('a', () => f(g(1)), info);\n await x.y();\n`), true, 'nested parens in the callback do not hide a later bare await');
+});
 
 test('the set of teardowns that can discard a test error only shrinks', () => {
   const found = [];
