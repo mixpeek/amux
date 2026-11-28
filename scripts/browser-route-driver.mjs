@@ -360,7 +360,7 @@ async function outboundCheck(ctx,state,b) {
   if(!outboundHost(ctx,url||''))return;
   await api(ctx.base,'/api/outbound/check','POST',{url,action:b.action,key:b.key,script:b.script||b.expression||b.code||b.js||''},ctx.session,ctx.token);
 }
-export async function route(ctx,verb,b={}) {
+export async function route(ctx,verb,b={},reopened=false) {
   if(!component(ctx.session))throw new RouteError('route requires an explicit session',400);
   ctx.cleanup_events=[];
   ctx.receipt=join(ctx.home,'browser-routing','sessions',key(ctx.session)+'.json');
@@ -415,6 +415,21 @@ export async function route(ctx,verb,b={}) {
     const result=await backend.verb(ctx,state,verb,b);
     if(verb==='stop')rmSync(ctx.receipt,{force:true});else atomic(ctx.receipt,state);return {...result,route:state,...(ctx.cleanup_events.length?{cleanup_events:ctx.cleanup_events}:{})};
   } catch(e) {
+    // A closed CDP browser (released after inactivity, stopped, or gone with a
+    // server restart) reopens on the next verb, once, on the same rung at the
+    // route's last URL (GitHub #466). Before, every verb answered 409 and a
+    // worker polling `status` looped on it: 28,510 refusals a week, ~4,000 a
+    // day from one worker. `status` reports the closed browser instead of
+    // starting it; an action is never replayed into the reopened page.
+    if(e.code==='ECONNREFUSED'&&state.backend==='cdp'&&!['stop','goal'].includes(verb)&&!reopened) {
+      if(verb==='status')return {running:false,closed:true,profile:state.profile,backend:state.backend,reason:'nothing answers on its port; the next verb reopens it'};
+      const from=Math.max(0,ladder(ctx).indexOf(state.backend));
+      const next=await launch(ctx,{url:state.url,profile:state.selected_profile||state.profile,selected_profile:state.selected_profile||state.profile},[...(state.attempts||[]),{backend:state.backend,verdict:'closed',error:'nothing answered on its port'}],from);
+      const event={backend:next.route?.backend,profile:next.route?.profile,url:state.url,verdict:'browser_route_reopened',reason:'nothing answered on its port (released after inactivity, stopped, or gone with a server restart)'};
+      if(verb==='action'){ctx.cleanup_events.push(event);throw Object.assign(new RouteError(`this route's browser was closed and has been reopened at ${state.url}; the action was not run. Observe state or a screenshot, then retry it.`,409),{route:next.route,code:'route_reopened'});}
+      const r=await route(ctx,verb,b,true);
+      return {...r,cleanup_events:[event,...(r.cleanup_events||[])]};
+    }
     if(terminal(e)||verb==='stop'||verb==='goal'||nextRung(ctx,state.backend)>=ladder(ctx).length)throw e;
     ctx.previous_routes.push({...state,previous_routes:undefined});
     const next=await launch(ctx,{url:state.url,profile:state.selected_profile||state.profile,selected_profile:state.selected_profile||state.profile},[...state.attempts,{backend:state.backend,verdict:'failed',error:e.message}],nextRung(ctx,state.backend));
