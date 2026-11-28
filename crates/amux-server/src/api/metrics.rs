@@ -823,6 +823,7 @@ async fn metrics(State(state): State<AppState>) -> Response {
             tracing::warn!("system metrics collection failed: {e}");
         }
     }
+    body["routes"] = crate::api::route_metrics::snapshot();
     Json(body).into_response()
 }
 
@@ -1247,6 +1248,63 @@ mod tests {
                 })
             })
             .unwrap();
+    }
+
+    /// RC-13: per-route request counters appear on the metrics endpoint.
+    #[tokio::test]
+    async fn metrics_endpoint_exposes_per_route_request_counters() {
+        let (app, _store, _dir) = app();
+        for _ in 0..3 {
+            let _ = app
+                .clone()
+                .oneshot(Request::builder().uri("/api/rc13zz/none/x").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+        }
+        let res = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/metrics").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let by = &v["routes"]["by_route"];
+        // Unique label: no other test touches /api/rc13zz, so the count is exact.
+        assert_eq!(
+            by["GET /api/rc13zz/*"].as_u64(),
+            Some(3),
+            "three GETs under /api/rc13zz/ must be counted exactly: {v}"
+        );
+    }
+
+    /// RC-13 review: non-/api paths are not counted, so they cannot use up the
+    /// label cap or leak ids into /api/metrics.
+    #[tokio::test]
+    async fn non_api_paths_are_not_counted_and_api_route_keeps_its_label() {
+        let (app, _store, _dir) = app();
+        for i in 0..300 {
+            let _ = app
+                .clone()
+                .oneshot(Request::builder().uri(format!("/pub/rc13id{i}/a/b")).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+        }
+        let _ = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/sessions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let res = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/metrics").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let by = v["routes"]["by_route"].as_object().unwrap();
+        assert!(by.keys().all(|k| !k.contains("rc13id") && !k.contains("/pub")), "{v}");
+        assert!(by["GET /api/sessions"].as_u64().unwrap_or(0) >= 1, "{v}");
     }
 
     /// RR-0044b metrics shape: /api/metrics/fleet reports per-provider
