@@ -64,11 +64,13 @@ c.executemany(
     [(f"PERF-{i}", text(6), text(60), random.choice(("todo","doing","done")),
       f"lane-{i % 40}", "seed", now - i, now - i, f"`09:{i%60:02d}` seeded {text(4)}\n")
      for i in range(cards)])
+# Messages are cmd_history rows (the MSG-<n> record) since b99c30583 dropped
+# _amux_messages; a `user` row is indexed by search_prompt_ai. Seeding the
+# dropped table failed every nightly from 2026-11-26 ("no such table").
 c.executemany(
-    "INSERT INTO _amux_messages (id, from_actor, target, body, created_at, delivery)"
-    " VALUES (?,?,?,?,?,?)",
-    [(f"msg_perf_{i}", '{"id":"lane-a"}', '{"id":"lane-b"}', text(40),
-      "2026-08-09T00:00:00+00:00", "{}") for i in range(msgs)])
+    "INSERT INTO cmd_history (text, type, session, ts, origin) VALUES (?,?,?,?,?)",
+    [(text(40), "user", f"lane-{i % 40}", (now - i) * 1000, "lane-a")
+     for i in range(msgs)])
 c.commit()
 n_docs = c.execute("SELECT COUNT(*) FROM search_docs").fetchone()[0]
 n_fts  = c.execute("SELECT COUNT(*) FROM search_fts").fetchone()[0]
