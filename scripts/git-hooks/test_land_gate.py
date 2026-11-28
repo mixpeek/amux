@@ -419,6 +419,16 @@ def review_convergence(tmp):
     out = land_review.run(repo, h4, h5, "quick", "req:MSG-2", "", "HEAD")
     check("a finding resolved with a reason stops blocking", out["verdict"], "review_pass")
 
+    # GitHub #473: rounds belong to a change, not to the request it cites. A
+    # fix-up keeps its change's key; a second change under one request does not
+    # inherit its rounds.
+    k1 = land_review.change_key(repo, base, h1)
+    check("a change's key names its request and first subject", k1, "req:MSG-1|subject:feat: two")
+    check("fix-up commits keep the change's key", land_review.change_key(repo, base, h4), k1)
+    h6 = change("x = 7\n", "feat: unrelated\n\nAmux-Request: MSG-1")
+    check("a new change citing the same request gets its own key",
+          land_review.change_key(repo, h5, h6) != k1, True)
+
     os.environ["AMUX_LAND_REVIEW_CLAUDE"] = os.path.join(tmp, "no-such-claude")
     out = land_review.run(repo, h4, h5, "quick", "req:MSG-3", "", "HEAD")
     check("a review that could not run says unmeasured, never pass", out["verdict"], "review_unmeasured")

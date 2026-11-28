@@ -94,14 +94,21 @@ def log(line):
 
 def change_key(repo, base, head):
     """One key per change, stable across rebases and fix-up commits: the
-    Amux-Request ids it cites, else its first commit's subject."""
+    Amux-Request ids it cites AND its first commit's subject.
+
+    The request alone used to be the key (GitHub #473), so every change citing
+    one long request shared three rounds: the fourth independent change landed
+    `review_capped` with no review at all. A fix-up commit keeps the first
+    commit's subject, so a change keeps its own rounds across fixes; a new
+    change under the same request starts at round 1."""
     msgs = git(repo, "log", "--reverse", "--format=%B%x00", "%s..%s" % (base, head))
     reqs = sorted(set(re.findall(r"^Amux-Request:\s*(.+)$", msgs, re.M)))
     reqs = sorted({x.strip() for r in reqs for x in r.split(",") if x.strip()})
-    if reqs:
-        return "req:" + ",".join(reqs)
     first = msgs.split("\x00", 1)[0].strip().splitlines()
-    return "subject:" + (first[0].strip().lower() if first else head)
+    subject = "subject:" + (first[0].strip().lower() if first else head)
+    if reqs:
+        return "req:" + ",".join(reqs) + "|" + subject
+    return subject
 
 
 def state_path(key):
